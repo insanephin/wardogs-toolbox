@@ -62,18 +62,10 @@ export default function Server() {
         </Card>
       </div>
       {can('admin') ? (
-        <Card title="게임 서버에 피드 연결하기 (Season 2)">
+        <Card title="피드 연결" extra={<button className="btn btn-sm" type="button" onClick={() => navigator.clipboard?.writeText(snippet).then(() => toast('복사했습니다'))}>복사</button>}>
           <div className="card-body stack">
-            <p>아래 줄을 게임 서버의 ServerSettings.ini에 직접 넣고 서버를 재시작하세요. 이 키들은 RCON으로 쓸 수 없습니다.</p>
+            <p className="muted small">ServerSettings.ini에 넣고 재시작. Url은 게임 서버에서 닿는 주소로.</p>
             <pre className="code">{snippet}</pre>
-            <div>
-              <button className="btn btn-sm" type="button" onClick={() => navigator.clipboard?.writeText(snippet).then(() => toast('복사했습니다'))}>복사</button>
-            </div>
-            <ul className="plain-list small">
-              <li>Url은 게임 서버에서 이 대시보드로 닿는 주소여야 합니다. 브라우저 주소와 다를 수 있습니다.</li>
-              <li>피드는 재전송이 없습니다. 대시보드가 꺼져 있던 동안의 킬은 복구되지 않으니 게임 서버 가까이 두고 항상 켜 두세요.</li>
-              <li>옛 빌드처럼 주소 뒤에 /api/ingest/events가 한 번 더 붙어도 받습니다.</li>
-            </ul>
           </div>
         </Card>
       ) : null}
