@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import type { Live } from '../lib/types.ts';
 import { useStore, can } from '../lib/store.ts';
 import { run } from '../lib/api.ts';
+import { toast } from '../lib/toast.ts';
 import { Counter } from '../lib/modal.tsx';
 import { fmtClock, fmtDuration, fmtAgo, fmtDist, pct, charCount, STATE_LABELS } from '../lib/format.ts';
 import { Card, Empty, ScoreRow, Fdot, useNow, useFactionColor } from '../components/common.tsx';
@@ -25,6 +26,7 @@ export default function Overview() {
   return (
     <>
       <Banners live={live} />
+      <ServerLine live={live} />
       <Stats live={live} />
       <div className="grid-2">
         <Scores live={live} />
@@ -80,6 +82,18 @@ function Banners({ live }: { live: Live | null }) {
 const MODIFIERS: Record<string, string> = { KOTH_InfantryOnly: '보병 전용', KOTH_Hardcore: '하드코어' };
 function modeLabel(id: string): string {
   return MODIFIERS[id] ?? (/_KOTH_\d+$/.test(id) ? 'KOTH' : id);
+}
+
+function ServerLine({ live }: { live: Live | null }) {
+  const id = live?.serverId;
+  return (
+    <div className="server-line small">
+      <span className="muted">서버 접속 ID</span>
+      {id ? (
+        <button className="mono link" type="button" title="복사" onClick={() => navigator.clipboard?.writeText(id).then(() => toast('복사했습니다'))}>{id}</button>
+      ) : <span className="muted">없음</span>}
+    </div>
+  );
 }
 
 function Stat({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
