@@ -29,8 +29,8 @@ services:
       DASH_PORT: 8080
       DB_PATH: /app/data/dashboard.db
       BOT_URL: http://bot:8081
-    ports:
-      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8090}:8080"
+    networks:
+      - app
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -52,11 +52,17 @@ services:
       BOT_HTTP_PORT_INTERNAL: 8081
       # Shared with the dashboard so it can join account_links against players.
       DB_PATH: /app/data/dashboard.db
-    ports:
-      - "${BOT_HTTP_BIND:-127.0.0.1}:${BOT_HTTP_PORT:-8091}:8081"
+    networks:
+      - app
 
   cloudflared:
     image: cloudflare/cloudflared:latest
     command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARED_TOKEN:?Set CLOUDFLARED_TOKEN in .env}"]
     restart: unless-stopped
+    networks:
+      - app
+
+networks:
+  app:
+    driver: bridge
 
