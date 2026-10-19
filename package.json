@@ -1,0 +1,29 @@
+{
+  "name": "wardogs-rcon-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WARDOGS 커뮤니티 서버 관리자 대시보드 (RCON + 이벤트 피드)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/main.ts",
+    "dev": "vite --config web/vite.config.ts",
+    "build": "vite build --config web/vite.config.ts",
+    "check": "node --experimental-strip-types --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/check.ts",
+    "typecheck": "tsc -p . && tsc -p web"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}
