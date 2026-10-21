@@ -69,7 +69,7 @@ function BanForm({ onDone }: { onDone: () => void }) {
     setInvalid(false);
     const online = getState().live?.players?.some((p) => p.steamId === id);
     if (!online && !(await confirmAction('접속 중이 아닌 플레이어',
-      '게임은 접속한 적 없는 SteamID를 밴하지 못합니다. 대기열에 넣고, 이 플레이어가 입장하는 순간 대시보드가 밴하고 킥합니다. 대시보드가 꺼져 있으면 집행되지 않습니다.',
+      '게임은 접속한 적 없는 SteamID를 밴 할 수 없습니다.',
       { confirm: '대기열에 등록' }))) return;
     const r = await run('밴', 'POST', '/api/bans', { steamId: id, reason: reason.trim() });
     if (r) {
@@ -94,7 +94,7 @@ function BanTable({ data, onChange }: { data: OrError<Bans> | null; onChange: ()
   if (data.error !== undefined) return <Empty>밴 목록을 불러오지 못했습니다: {data.error}</Empty>;
   if (!data.bans.length) return <Empty>목록이 비어있습니다.</Empty>;
   const unban = async (b: Ban) => {
-    if (!(await confirmAction('밴 해제', `${b.steamId}의 밴을 해제합니다. 해제 후 목록을 다시 읽어 실제로 풀렸는지 확인합니다.`, { danger: false, confirm: '해제' }))) return;
+    if (!(await confirmAction('밴 해제', `${b.steamId}의 밴을 해제합니다.`, { danger: false, confirm: '해제' }))) return;
     await run('밴 해제', 'DELETE', `/api/bans/${b.steamId}`);
     onChange();
   };
@@ -123,7 +123,7 @@ function Pending({ list, onChange }: { list: PendingBan[] | undefined; onChange:
   };
   return (
     <>
-      <p className="muted small">게임은 접속 중인 플레이어만 밴할 수 있어서, 오프라인 밴은 여기 대기했다가 입장 순간 집행됩니다.</p>
+      <p className="muted small">게임은 접속 중인 플레이어만 밴할 수 있어서, 오프라인 밴은 대기자 목록에 추가 후 입장 순간 집행됩니다.</p>
       {list?.length ? (
         <ul className="plain-list">
           {list.map((b) => (

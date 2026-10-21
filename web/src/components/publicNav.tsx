@@ -4,7 +4,7 @@ import { followLink } from '../lib/publicRouter.ts';
 
 export const PAGES = [
   { id: 'link', path: '/', label: '계정 등록' },
-  { id: 'report', path: '/report', label: '신고하기' },
+  { id: 'report', path: '/report', label: '신고' },
 ] as const;
 
 export type PageId = (typeof PAGES)[number]['id'];

@@ -51,7 +51,7 @@ export default function Links() {
               : !rows.length ? <Empty>{all.length ? '조건에 맞는 계정이 없습니다.' : '아직 연동한 사람이 없습니다. 플레이어에게 연동 페이지(/)를 안내해 주세요.'}</Empty>
                 : <LinkTable rows={rows} onChanged={load} />}
         </div></div>
-        <p className="card-foot muted small">플레이어가 <a href="/" className="link">연동 페이지(/)</a>에서 치지직과 스팀에 모두 로그인해야 연동됩니다. 본인은 해제할 수 없고, 신고로 요청이 오면 모더레이터 이상이 이 목록에서 해제합니다.</p>
+        <p className="card-foot muted small">플레이어가 <a href="/" className="link">연동 페이지</a>에서 치지직과 스팀에 모두 로그인해야 연동됩니다.</p>
       </Card>
       <div className="stack">
         <Card title="화이트리스트">{wl ? <WhitelistForm wl={wl} onSaved={load} /> : <Empty><Spinner /></Empty>}</Card>
@@ -124,7 +124,7 @@ function WhitelistForm({ wl, onSaved }: { wl: Whitelist; onSaved: () => void }) 
       {editable
         ? <div><button className="btn" type="submit" disabled={!dirty || !message.trim()}>저장</button></div>
         : <p className="muted small">변경은 관리자만 할 수 있습니다.</p>}
-      <p className="muted small">대시보드가 켜져 있을 때만 집행됩니다. RCON 한도를 지키려고 한 번에 최대 3명씩, 몇 초 간격으로 처리합니다.</p>
+      <p className="muted small">대시보드가 켜져 있을 때만 집행됩니다. RCON 제한에 의해 1회 요청마다 최대 3명씩 처리 가능합니다.</p>
     </form>
   );
 }

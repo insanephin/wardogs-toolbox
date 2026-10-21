@@ -59,7 +59,7 @@ export default function LinkPage({ active }: { active: boolean }) {
         <ul>
           <li>스팀은 <b>워독스를 보유한 계정</b>으로 로그인하세요.</li>
           <li>한 번 등록하면 <b>직접 해제하거나 다른 계정으로 바꿀 수 없습니다.</b></li>
-          <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href="/report" onClick={followLink}>신고하기</a>에 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
+          <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href="/report" onClick={followLink}>신고</a>에 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
         </ul>
       </div>
 
