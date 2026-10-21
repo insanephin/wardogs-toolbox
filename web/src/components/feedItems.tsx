@@ -11,7 +11,6 @@ function Who({ name, steamId, faction }: { name: string | null; steamId: string 
   return <span className="who" title={steamId || ''}><Fdot color={color(faction)} />{name || steamId || '환경'}</span>;
 }
 
-// `now` is only there to re-render a memoized row so its relative time stays fresh.
 export const KillRow = memo(function KillRow({ k, compact = false }: { k: Kill; compact?: boolean; now?: number }) {
   const tags = k.tags.filter((t) => SHOWN_TAGS.includes(t));
   return (

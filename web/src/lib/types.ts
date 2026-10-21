@@ -1,9 +1,5 @@
-// JSON shapes the dashboard API sends. They mirror server/ but as they arrive over the wire
-// (Sets become arrays, timestamps are epoch milliseconds).
-
 export type Role = 'viewer' | 'mod' | 'admin';
 
-// A fetched value, or the error message shown in its place. `x.error` narrows either way.
 export type OrError<T> = (T & { error?: undefined }) | { error: string };
 
 export interface Me {
@@ -12,14 +8,11 @@ export interface Me {
 }
 
 export interface Link {
-  discordId: string;
-  discordName: string | null;
-  steamId: string | null;
+  steamId: string;
   steamName: string | null;
-  steamLinkedAt: number | null;
-  chzzkChannelId: string | null;
+  chzzkChannelId: string;
   chzzkName: string | null;
-  chzzkLinkedAt: number | null;
+  linkedAt: number | null;
 }
 
 export interface LinkRow extends Link {
@@ -39,7 +32,7 @@ export interface Player {
   link: Link | null;
 }
 
-export interface FactionScore {
+interface FactionScore {
   name: string;
   score: number;
   colorHex?: string;
@@ -65,7 +58,7 @@ export interface FeedStatus {
   matchState: { state?: string; at: number; eventTime: number | null } | null;
 }
 
-export interface MatchStat {
+interface MatchStat {
   steamId: string;
   kills: number;
   headshots: number;
@@ -140,7 +133,6 @@ export interface Engagement {
   weapons: Record<string, number>;
 }
 
-// Match events as the game sends them, plus kills when listed alongside them (type 'killed').
 export interface FeedEvent extends Partial<Omit<Kill, 'receivedAt'>> {
   type: string;
   receivedAt: number;
@@ -273,7 +265,7 @@ export interface Audit {
 }
 
 export interface PlayerProfile {
-  player: { first_seen: number; sessions: number } | null;
+  player: { first_seen: number; last_seen: number; sessions: number } | null;
   names: { name: string }[];
   totals: { kills?: number; deaths?: number; headshots?: number; teamkills?: number };
   weapons: { weapon: string; kills: number }[];
@@ -287,42 +279,21 @@ export interface WeaponStat {
   maxDistance: number | null;
 }
 
-export interface PublicLive {
-  online: boolean;
-  serverName: string | null;
+export interface Report {
+  id: number;
+  createdAt: number;
+  reporterChzzkId: string | null;
+  reporterChzzkName: string | null;
+  reporterSteamId: string | null;
+  reporterSteamName: string | null;
+  targetName: string;
+  targetSteamId: string | null;
+  category: string;
+  description: string;
+  evidenceUrl: string | null;
   map: string | null;
-  playerCount: number;
-  maxPlayers: number | null;
-  factionScores: FactionScore[];
-  scoreCap: number | null;
-  matchState: string | null;
-  players: { channelId: string; name: string | null; faction: string | null; kills: number; deaths: number; cash: number | null }[];
-  updatedAt: number | null;
-}
-
-export interface LeaderboardRow {
-  channelId: string;
-  name: string | null;
-  matches: number;
-  kills: number;
-  deaths: number;
-  kd: number;
-  cashEarned: number;
-  cashPeak: number | null;
-  wins: number;
-  decided: number;
-  winRate: number | null;
-  headshots: number;
-  headshotRate: number | null;
-  feedKills: number;
-  longest: number | null;
-  lastSeen: number;
-}
-
-export interface Leaderboard {
-  period: string;
-  since: number;
-  updatedAt: number;
-  minimums: { kd: number; headshotRate: number; winRate: number };
-  rows: LeaderboardRow[];
+  status: 'open' | 'resolved' | 'rejected';
+  handledBy: string | null;
+  handledAt: number | null;
+  note: string | null;
 }

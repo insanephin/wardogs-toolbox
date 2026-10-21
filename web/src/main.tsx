@@ -1,9 +1,31 @@
-import { StrictMode } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { PAGES, PublicShell } from './components/publicNav.tsx';
+import type { PageId } from './components/publicNav.tsx';
+import { usePath } from './lib/publicRouter.ts';
+import LinkPage from './views/LinkPage.tsx';
+import ReportPage from './views/ReportPage.tsx';
 import './app.css';
 
-// /leaderboard is the public page; everything else is the admin dashboard behind the login.
-// Loaded separately so leaderboard visitors don't download the dashboard code.
-const load = location.pathname.replace(/\/+$/, '') === '/leaderboard' ? import('./views/Leaderboard.tsx') : import('./App.tsx');
+function PublicApp() {
+  const path = usePath();
+  const page = PAGES.find((p) => p.path === path) ?? PAGES[0];
+  const [visited, setVisited] = useState<ReadonlySet<PageId>>(() => new Set([page.id]));
 
-load.then(({ default: Root }) => createRoot(document.getElementById('root')!).render(<StrictMode><Root /></StrictMode>));
+  useEffect(() => {
+    document.title = page.label;
+    setVisited((v) => (v.has(page.id) ? v : new Set(v).add(page.id)));
+  }, [page]);
+
+  return (
+    <PublicShell current={page.id}>
+      {PAGES.map(({ id }) => (visited.has(id) || id === page.id ? (
+        <section key={id} className="public-page" hidden={id !== page.id}>
+          {id === 'link' ? <LinkPage active={id === page.id} /> : <ReportPage active={id === page.id} />}
+        </section>
+      ) : null))}
+    </PublicShell>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(<StrictMode><PublicApp /></StrictMode>);

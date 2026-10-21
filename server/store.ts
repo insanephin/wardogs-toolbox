@@ -1,5 +1,3 @@
-// SQLite persistence. The feed never resends, so everything received is written immediately.
-
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -92,20 +90,12 @@ CREATE TABLE IF NOT EXISTS pending_bans (
   last_error TEXT
 );
 
--- Written by the Discord bot (bot/utils/database/sqlite/models.py); created here too so the
--- dashboard works before the bot has ever run. Keep the two definitions in step.
 CREATE TABLE IF NOT EXISTS account_links (
-  discord_id BIGINT NOT NULL,
-  discord_name VARCHAR,
-  steam_id VARCHAR,
-  steam_name VARCHAR,
-  steam_linked_at DATETIME,
-  chzzk_channel_id VARCHAR,
-  chzzk_name VARCHAR,
-  chzzk_linked_at DATETIME,
-  PRIMARY KEY (discord_id),
-  UNIQUE (steam_id),
-  UNIQUE (chzzk_channel_id)
+  steam_id TEXT PRIMARY KEY,
+  steam_name TEXT,
+  chzzk_channel_id TEXT NOT NULL UNIQUE,
+  chzzk_name TEXT,
+  linked_at DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -113,8 +103,6 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
--- The in-game scoreboard (kills, deaths, cash) per match, accumulated from polls. Feeds the public
--- leaderboard. faction is the last one seen, so a team switch counts for the side the player ended on.
 CREATE TABLE IF NOT EXISTS match_players (
   match_key TEXT NOT NULL,
   steam_id TEXT NOT NULL,
@@ -136,7 +124,6 @@ CREATE TABLE IF NOT EXISTS match_results (
   ended_at INTEGER NOT NULL
 );
 
--- One row per POST to the ingest endpoint, accepted or not. Pruned to FEED_REQUEST_KEEP rows.
 CREATE TABLE IF NOT EXISTS feed_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at INTEGER NOT NULL,
@@ -149,7 +136,24 @@ CREATE TABLE IF NOT EXISTS feed_requests (
   error TEXT
 );
 
--- Bans placed by the whitelist, kept apart from moderator bans so lifting them never touches those.
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at INTEGER NOT NULL,
+  reporter_chzzk_id TEXT, reporter_chzzk_name TEXT,
+  reporter_steam_id TEXT, reporter_steam_name TEXT,
+  target_name TEXT NOT NULL,
+  target_steam_id TEXT,
+  category TEXT NOT NULL,
+  description TEXT NOT NULL,
+  evidence_url TEXT,
+  map TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  handled_by TEXT,
+  handled_at INTEGER,
+  note TEXT
+);
+CREATE INDEX IF NOT EXISTS reports_created ON reports(created_at);
+
 CREATE TABLE IF NOT EXISTS whitelist_bans (
   steam_id TEXT PRIMARY KEY,
   name TEXT,
@@ -158,11 +162,8 @@ CREATE TABLE IF NOT EXISTS whitelist_bans (
 );
 `;
 
-// Discord IDs pass 2^53, which node:sqlite refuses to read as a number; always select them as text.
-// Queries alias account_links as `a`.
-const LINK_COLUMNS = `CAST(a.discord_id AS TEXT) AS discordId, a.discord_name AS discordName,
-  a.steam_id AS steamId, a.steam_name AS steamName, a.steam_linked_at AS steamLinkedAt,
-  a.chzzk_channel_id AS chzzkChannelId, a.chzzk_name AS chzzkName, a.chzzk_linked_at AS chzzkLinkedAt`;
+const LINK_COLUMNS = `a.steam_id AS steamId, a.steam_name AS steamName,
+  a.chzzk_channel_id AS chzzkChannelId, a.chzzk_name AS chzzkName, a.linked_at AS linkedAt`;
 
 const FEED_REQUEST_KEEP = 5000;
 
@@ -174,7 +175,6 @@ export interface Whitelist {
 }
 const WHITELIST_DEFAULT: Whitelist = { mode: 'off', message: '화이트리스트에 등록되지 않은 유저입니다.' };
 
-// node:sqlite types every column as a generic SQL value; rows are mapped to the shapes below.
 type Row = Record<string, any>;
 
 export interface Kill {
@@ -216,7 +216,6 @@ export interface Engagement {
   weapons: Record<string, number>;
 }
 
-// The engagement still being added to, as feed.ts keeps it in memory.
 export interface OpenEngagement extends Omit<Engagement, 'avgDistance' | 'participants'> {
   distanceSum: number;
   distanceN: number;
@@ -272,17 +271,14 @@ export interface FeedRequest {
 }
 
 export interface Link {
-  discordId: string;
-  discordName: string | null;
-  steamId: string | null;
+  steamId: string;
   steamName: string | null;
-  steamLinkedAt: number | null;
-  chzzkChannelId: string | null;
+  chzzkChannelId: string;
   chzzkName: string | null;
-  chzzkLinkedAt: number | null;
+  linkedAt: number | null;
 }
 
-export type LinkWithSeen = Link & { lastName: string | null; lastSeen: number | null };
+type LinkWithSeen = Link & { lastName: string | null; lastSeen: number | null };
 
 export interface PendingBan {
   steam_id: string;
@@ -300,21 +296,32 @@ export interface WhitelistBan {
   linked: boolean;
 }
 
-export interface LeaderboardRow {
-  channelId: string;
-  name: string;
-  matches: number;
-  kills: number;
-  deaths: number;
-  cashEarned: number;
-  cashPeak: number | null;
-  wins: number;
-  decided: number;
-  lastSeen: number;
-  feedKills: number;
-  headshots: number;
-  longest: number | null;
+export interface Report {
+  id: number;
+  createdAt: number;
+  reporterChzzkId: string | null;
+  reporterChzzkName: string | null;
+  reporterSteamId: string | null;
+  reporterSteamName: string | null;
+  targetName: string;
+  targetSteamId: string | null;
+  category: string;
+  description: string;
+  evidenceUrl: string | null;
+  map: string | null;
+  status: string;
+  handledBy: string | null;
+  handledAt: number | null;
+  note: string | null;
 }
+
+type NewReport = Omit<Report, 'id' | 'status' | 'handledBy' | 'handledAt' | 'note'>;
+
+const REPORT_COLUMNS = `id, created_at AS createdAt,
+  reporter_chzzk_id AS reporterChzzkId, reporter_chzzk_name AS reporterChzzkName,
+  reporter_steam_id AS reporterSteamId, reporter_steam_name AS reporterSteamName,
+  target_name AS targetName, target_steam_id AS targetSteamId, category, description,
+  evidence_url AS evidenceUrl, map, status, handled_by AS handledBy, handled_at AS handledAt, note`;
 
 export class Store {
   db: DatabaseSync;
@@ -325,9 +332,6 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
     this.db.exec(SCHEMA);
-    // account_links predates discord_name when the bot created it first.
-    const cols = (this.db.prepare('PRAGMA table_info(account_links)').all() as Row[]).map((c) => c.name);
-    if (!cols.includes('discord_name')) this.db.exec('ALTER TABLE account_links ADD COLUMN discord_name VARCHAR');
     this.q = prepareQueries(this.db);
   }
 
@@ -412,28 +416,38 @@ export class Store {
       .run(matchKey, winningFaction || null, at);
   }
 
-  // Public leaderboard: Chzzk-linked players only, and nothing that identifies them beyond their
-  // channel (no SteamID or Discord ID). Headshots come from the kill feed, the rest from polling.
-  leaderboard(since = 0): LeaderboardRow[] {
-    return this.db.prepare(`
-      WITH mp AS (
-        SELECT m.steam_id, COUNT(*) AS matches, SUM(m.kills) AS kills, SUM(m.deaths) AS deaths,
-          SUM(m.cash_earned) AS cashEarned, MAX(m.cash_peak) AS cashPeak,
-          SUM(CASE WHEN r.winning_faction IS NOT NULL AND m.faction = r.winning_faction THEN 1 ELSE 0 END) AS wins,
-          SUM(CASE WHEN r.match_key IS NOT NULL THEN 1 ELSE 0 END) AS decided,
-          MAX(m.last_seen) AS lastSeen
-        FROM match_players m LEFT JOIN match_results r ON r.match_key = m.match_key
-        WHERE m.last_seen >= :since GROUP BY m.steam_id
-      ), k AS (
-        SELECT killer_steam AS steam_id, COUNT(*) AS feedKills, SUM(headshot) AS headshots, MAX(distance_m) AS longest
-        FROM kills WHERE received_at >= :since AND suicide = 0 AND teamkill = 0 AND killer_steam IS NOT NULL
-        GROUP BY killer_steam
-      )
-      SELECT a.chzzk_channel_id AS channelId, a.chzzk_name AS name,
-        mp.matches, mp.kills, mp.deaths, mp.cashEarned, mp.cashPeak, mp.wins, mp.decided, mp.lastSeen,
-        COALESCE(k.feedKills, 0) AS feedKills, COALESCE(k.headshots, 0) AS headshots, k.longest
-      FROM mp JOIN account_links a ON a.steam_id = mp.steam_id AND a.chzzk_channel_id IS NOT NULL
-      LEFT JOIN k ON k.steam_id = mp.steam_id`).all({ since }) as Row[] as LeaderboardRow[];
+  addReport(r: NewReport): Report {
+    const { lastInsertRowid } = this.db.prepare(`INSERT INTO reports
+      (created_at, reporter_chzzk_id, reporter_chzzk_name, reporter_steam_id, reporter_steam_name,
+       target_name, target_steam_id, category, description, evidence_url, map)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(r.createdAt, r.reporterChzzkId, r.reporterChzzkName,
+      r.reporterSteamId, r.reporterSteamName, r.targetName, r.targetSteamId, r.category, r.description, r.evidenceUrl, r.map);
+    return this.report(Number(lastInsertRowid))!;
+  }
+
+  report(id: number): Report | null {
+    return (this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM reports WHERE id = ?`).get(id) as Row | undefined) as Report | undefined ?? null;
+  }
+
+  reportsByReporter(chzzkId: string, { since = 0, limit = 50 } = {}): Report[] {
+    return this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM reports
+      WHERE reporter_chzzk_id = ? AND created_at >= ?
+      ORDER BY id DESC LIMIT ?`).all(chzzkId, since, limit) as Row[] as Report[];
+  }
+
+  reports({ status, limit = 200 }: { status?: string; limit?: number } = {}): Report[] {
+    return this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM reports WHERE (:status IS NULL OR status = :status)
+      ORDER BY id DESC LIMIT :limit`).all({ status: status ?? null, limit }) as Row[] as Report[];
+  }
+
+  updateReport(id: number, status: string, note: string | null, by: string, at: number): Report | null {
+    this.db.prepare('UPDATE reports SET status = ?, note = ?, handled_by = ?, handled_at = ? WHERE id = ?').run(status, note, by, at, id);
+    return this.report(id);
+  }
+
+  steamIdByName(name: string): string | null {
+    const r = this.db.prepare('SELECT steam_id FROM player_names WHERE name = ? ORDER BY last_seen DESC LIMIT 1').get(name) as Row | undefined;
+    return r?.steam_id ?? null;
   }
 
   recentKills({ limit = 100, before, search }: { limit?: number; before?: number; search?: string } = {}): Kill[] {
@@ -481,7 +495,6 @@ export class Store {
       at: r.at, peer: r.peer ?? null, status: r.status, code: r.code ?? null, events: r.events ?? null,
       accepted: r.accepted ?? null, duplicates: r.duplicates ?? null, error: r.error ? String(r.error).slice(0, 200) : null,
     }).lastInsertRowid);
-    // Cheap on the primary key, and keeps a flood of bad requests from growing the file.
     this.q.pruneFeedRequests.run(id - FEED_REQUEST_KEEP);
   }
 
@@ -489,7 +502,6 @@ export class Store {
     return this.db.prepare('SELECT * FROM feed_requests ORDER BY id DESC LIMIT ?').all(limit);
   }
 
-  // Kills and other feed events, newest first, as one list. Kills carry type 'killed'.
   feedEvents(limit = 300) {
     const kills = this.recentKills({ limit }).map((k) => ({ type: 'killed', ...k }));
     return [...kills, ...this.recentMatchEvents(limit)].sort((a, b) => b.receivedAt - a.receivedAt).slice(0, limit);
@@ -531,14 +543,35 @@ export class Store {
     this.db.prepare('UPDATE pending_bans SET last_error = ? WHERE steam_id = ?').run(error, steamId);
   }
 
-  // Every link, with the name the server last saw for the Steam account.
   links(): LinkWithSeen[] {
     return (this.db.prepare(`SELECT ${LINK_COLUMNS}, p.last_name AS lastName, p.last_seen AS lastSeen
       FROM account_links a LEFT JOIN players p ON p.steam_id = a.steam_id
-      ORDER BY COALESCE(a.steam_linked_at, a.chzzk_linked_at) DESC`).all() as Row[]).map((r) => ({ ...rowToLink(r), lastName: r.lastName, lastSeen: r.lastSeen }));
+      ORDER BY a.linked_at DESC`).all() as Row[]).map((r) => ({ ...rowToLink(r), lastName: r.lastName, lastSeen: r.lastSeen }));
   }
 
-  // steamId -> link for the given players. Called every poll, so one query for the whole list.
+  linkByAccount(provider: 'chzzk' | 'steam', id: string): Link | null {
+    const col = provider === 'chzzk' ? 'chzzk_channel_id' : 'steam_id';
+    const r = this.db.prepare(`SELECT ${LINK_COLUMNS} FROM account_links a WHERE a.${col} = ?`).get(id) as Row | undefined;
+    return r ? rowToLink(r) : null;
+  }
+
+  saveLink(steamId: string, steamName: string, chzzkChannelId: string, chzzkName: string, linkedAt: string): void {
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('DELETE FROM account_links WHERE steam_id = ? OR chzzk_channel_id = ?').run(steamId, chzzkChannelId);
+      this.db.prepare('INSERT INTO account_links (steam_id, steam_name, chzzk_channel_id, chzzk_name, linked_at) VALUES (?, ?, ?, ?, ?)')
+        .run(steamId, steamName, chzzkChannelId, chzzkName, linkedAt);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  unlink(steamId: string): void {
+    this.db.prepare('DELETE FROM account_links WHERE steam_id = ?').run(steamId);
+  }
+
   linksBySteam(steamIds: string[]): Map<string, Link> {
     if (!steamIds.length) return new Map();
     const rows = this.q.linksBySteam.all(JSON.stringify(steamIds)) as Row[];
@@ -573,7 +606,6 @@ export class Store {
   }
 }
 
-// Everything run per poll or per feed event; node:sqlite has no statement cache of its own.
 function prepareQueries(db: DatabaseSync) {
   return {
     hasKill: db.prepare('SELECT 1 FROM kills WHERE event_id = ?'),
@@ -611,7 +643,6 @@ function prepareQueries(db: DatabaseSync) {
       VALUES (?, ?, ?, ?, 1)
       ON CONFLICT(steam_id) DO UPDATE SET last_seen = excluded.last_seen, last_name = excluded.last_name,
         sessions = sessions + ?`),
-    // Deltas, not totals: a dashboard restart or a rejoin then never double-counts or loses a row.
     addMatchPlayer: db.prepare(`INSERT INTO match_players
       (match_key, steam_id, map, faction, kills, deaths, cash_peak, cash_earned, first_seen, last_seen)
       VALUES (:matchKey, :steamId, :map, :faction, :kills, :deaths, :cashPeak, :earned, :at, :at)
@@ -629,7 +660,6 @@ function prepareQueries(db: DatabaseSync) {
   };
 }
 
-// SQLAlchemy writes DATETIME as 'YYYY-MM-DD HH:MM:SS.ffffff' in UTC, without an offset.
 function sqlTimeToMs(v: unknown): number | null {
   if (!v) return null;
   const ms = Date.parse(`${String(v).replace(' ', 'T')}Z`);
@@ -637,7 +667,7 @@ function sqlTimeToMs(v: unknown): number | null {
 }
 
 function rowToLink(r: Row): Link {
-  return { ...r, steamLinkedAt: sqlTimeToMs(r.steamLinkedAt), chzzkLinkedAt: sqlTimeToMs(r.chzzkLinkedAt) } as Link;
+  return { ...r, linkedAt: sqlTimeToMs(r.linkedAt) } as Link;
 }
 
 function rowToKill(r: Row): Kill {

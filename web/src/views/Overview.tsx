@@ -9,7 +9,6 @@ import { fmtClock, fmtDuration, fmtAgo, fmtDist, pct, charCount, STATE_LABELS } 
 import { Card, Empty, ScoreRow, Fdot, useNow, useFactionColor } from '../components/common.tsx';
 import { KillRow, EngagementCard } from '../components/feedItems.tsx';
 
-// Anti-cheat hints only. Thresholds are deliberately loose; a flag is a reason to look, not proof.
 const HS_FLAG_PCT = 60;
 const HS_FLAG_MIN_KILLS = 8;
 const LONG_KILL_M = 800;
@@ -113,7 +112,7 @@ function Stats({ live }: { live: Live | null }) {
   const modes = (s?.experiences || []).map(modeLabel).join(' · ');
   return (
     <div className="stat-grid">
-      <Stat label="맵" value={s?.map ?? '—'} sub={s ? `${modes || '모드 정보 없음'} · ${s.lighting}` : null} />
+      <Stat label="맵" value={s?.map ?? '—'} sub={s ? [modes || '모드 정보 없음', s.lighting].filter(Boolean).join(' · ') : null} />
       <Stat label="인원" value={s ? `${s.players.current} / ${s.players.max}` : '—'} sub={s ? '공개 슬롯 기준 (예약 슬롯 제외)' : null} />
       <Stat label="매치 시계" value={fmtClock(m?.matchSeconds)}
         sub={m?.matchSecondsSource === 'feed' ? '킬피드 기준 (서버가 시계를 안 보냄)' : m?.matchSecondsSource ? null : '서버·피드 모두 시계 없음'} />

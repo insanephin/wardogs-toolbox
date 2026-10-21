@@ -14,7 +14,6 @@ export default function Config() {
   const [text, setText] = useState('');
   const [validatedText, setValidatedText] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<ConfigResult | null>(null);
-  // What the result panel shows: initial warnings, or a validate/apply result.
   const [panel, setPanel] = useState<Panel | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -43,7 +42,6 @@ export default function Config() {
 
   useEffect(() => {
     load();
-    // Initial load only.
   }, []);
 
   const validate = async () => {

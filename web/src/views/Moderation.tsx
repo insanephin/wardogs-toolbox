@@ -105,7 +105,6 @@ function BanTable({ data, onChange }: { data: OrError<Bans> | null; onChange: ()
         {data.bans.map((b) => (
           <tr key={b.steamId}>
             <td className="mono">{b.steamId}</td>
-            {/* Config-file bans come back with a zero date. */}
             <td>{b.bannedAtUtc?.startsWith('0001') ? '설정 파일' : fmtTime(Date.parse(b.bannedAtUtc ?? ''))}</td>
             <td>{b.bannedBy || '—'}</td>
             <td>{b.reason || <span className="muted">—</span>}</td>

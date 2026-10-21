@@ -5,7 +5,6 @@ import { Card, Empty, useNow } from '../components/common.tsx';
 import type { ReactNode } from 'react';
 import type { Capabilities, Live } from '../lib/types.ts';
 
-// What the game itself reports about its feed senders (GET /v1/feed), when the build serves it.
 type KvRow = [label: string, value: ReactNode, cls?: string];
 
 function gameFeedLabel(g: Live['gameFeed'] | undefined, caps: Capabilities | null): string {

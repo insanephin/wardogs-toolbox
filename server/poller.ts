@@ -1,11 +1,3 @@
-// Game behaviour handled here:
-// - After a map change teams are blank for ~40s and the server looks empty while loading;
-//   faction memory is kept through that window so it is not read as everyone leaving.
-// - Names start as the bare Steam name and gain a clan tag shortly after joining, so a name is
-//   only recorded once the player has been on for a minute.
-// - Some hosts report every player's cash as 0.
-// - The game restarts itself after 24h, at the end of the round in progress.
-
 import type { RconClient, RconError, GameStatus, GamePlayer } from './rcon.ts';
 import type { Store, MatchPlayerDelta } from './store.ts';
 import type { FeedProcessor } from './feed.ts';
@@ -20,11 +12,8 @@ const CAPS_EVERY_MS = 60 * 60 * 1000;
 const MAP_CHANGE_GRACE_MS = 45_000;
 const NAME_SETTLE_MS = 60_000;
 const RESTART_AFTER_SEC = 24 * 3600;
-// Whitelist actions per poll, so switching it on in a full server cannot burn the RCON rate limit.
 const WHITELIST_PER_TICK = 3;
-// A player the game would not kick (still loading, say) is retried after this long, not every poll.
 const WHITELIST_RETRY_MS = 30_000;
-// Scoreboard deltas are held in memory and written this often; a crash loses at most this much.
 const SCOREBOARD_FLUSH_MS = 30_000;
 
 interface ScoreSeen {
@@ -38,8 +27,8 @@ interface PollerOptions {
   rcon: RconClient;
   store: Store;
   feed: FeedProcessor;
-  emit?: Emit;
-  watchers?: () => number;
+  emit: Emit;
+  watchers: () => number;
 }
 
 export class Poller {
@@ -61,19 +50,20 @@ export class Poller {
   intervalMs = WATCHED_MS;
   mapChangedAt = 0;
 
-  factions = new Map<string, string>(); // steamId -> last non-empty faction
-  joinedAt = new Map<string, number>(); // steamId -> first seen this session
-  lastSeenWrite = new Map<string, number>(); // steamId -> last time the players table was touched
-  whitelistTried = new Map<string, number>(); // steamId -> last enforcement attempt
-  scoreSeen = new Map<string, ScoreSeen>(); // steamId -> counters from the previous poll
-  scorePending = new Map<string, MatchPlayerDelta>(); // `${matchKey} ${steamId}` -> deltas not yet written
+  factions = new Map<string, string>();
+  joinedAt = new Map<string, number>();
+  lastSeenWrite = new Map<string, number>();
+  whitelistTried = new Map<string, number>();
+  scoreSeen = new Map<string, ScoreSeen>();
+  scorePending = new Map<string, MatchPlayerDelta>();
   lastScoreFlush = Date.now();
   lastHealthAt = 0;
   lastCapsAt = 0;
   timer: NodeJS.Timeout | undefined;
+  ticking = false;
   stopped = false;
 
-  constructor({ rcon, store, feed, emit = () => {}, watchers = () => 0 }: PollerOptions) {
+  constructor({ rcon, store, feed, emit, watchers }: PollerOptions) {
     this.rcon = rcon;
     this.store = store;
     this.feed = feed;
@@ -92,9 +82,8 @@ export class Poller {
     this.flushScoreboard();
   }
 
-  // Lets a viewer arriving on an idle dashboard see fresh data without waiting 30s.
   nudge() {
-    if (this.intervalMs > WATCHED_MS) {
+    if (this.intervalMs > WATCHED_MS && !this.ticking) {
       clearTimeout(this.timer);
       this.tick();
     }
@@ -110,6 +99,7 @@ export class Poller {
 
   async tick(): Promise<void> {
     const now = Date.now();
+    this.ticking = true;
     try {
       if (!this.rcon.capabilities || now - this.lastCapsAt > CAPS_EVERY_MS) {
         await this.rcon.loadCapabilities();
@@ -124,7 +114,6 @@ export class Poller {
       if (now - this.lastHealthAt > HEALTH_EVERY_MS) {
         const f = this.rcon.features;
         if (f.health) this.health = await this.rcon.health();
-        // The game's side of the event feed: whether its senders are reaching their endpoints.
         if (f.feed) this.gameFeed = await this.rcon.feedHealth().catch(() => null);
         this.lastHealthAt = now;
       }
@@ -148,9 +137,9 @@ export class Poller {
       this.online = e.status === 429 ? this.online : false;
       this.lastError = { code: e.code, message: e.message, at: now };
     }
+    this.ticking = false;
     this.lastPollAt = now;
     this.intervalMs = this.nextInterval();
-    // The snapshot costs several queries; nobody to send it to means nothing to build.
     if (this.watchers() > 0) this.emit('live', this.snapshot());
     if (!this.stopped) this.timer = setTimeout(() => this.tick(), this.intervalMs);
   }
@@ -162,7 +151,6 @@ export class Poller {
     return this.players.length === 0 ? EMPTY_MS : IDLE_MS;
   }
 
-  // Keep polling to at most a third of the server's per-IP limit, leaving room for actions.
   budgetedInterval(target: number): number {
     const limit = this.rcon.capabilities?.limits?.maxRequestsPerMinutePerIp;
     if (!limit) return target;
@@ -181,13 +169,11 @@ export class Poller {
       const isNew = !this.joinedAt.has(p.steamId);
       if (isNew) this.joinedAt.set(p.steamId, now);
       const settled = now - (this.joinedAt.get(p.steamId) ?? now) >= NAME_SETTLE_MS;
-      // Write on join, then about once a minute; every 2s tick would be needless churn.
       if (isNew || (settled && now - (this.lastSeenWrite.get(p.steamId) ?? 0) > NAME_SETTLE_MS)) {
         this.store.seePlayer(p.steamId, p.name ?? null, now, isNew, settled);
         this.lastSeenWrite.set(p.steamId, now);
       }
     }
-    // While loading a map everyone appears gone; keep their session start through it.
     if (!transition) {
       for (const id of this.joinedAt.keys()) {
         if (!present.has(id)) {
@@ -202,12 +188,6 @@ export class Poller {
     this.players = list;
   }
 
-  // The game's scoreboard only lives for the current match, so it is accumulated here as deltas
-  // between polls. A counter that goes down means it restarted (rejoin, or a match restart nobody
-  // announced), so the new value counts from zero. The first poll of a player, of a match, or after
-  // a map load is only a baseline: counters still showing the last match must not be counted again.
-  // Cash earned is the sum of rises between polls; spending inside one interval hides earnings, so
-  // it is an underestimate, and rounds where the host zeroes everyone's cash are skipped.
   trackScoreboard(now: number): void {
     const matchKey = this.feed.matchKey;
     if (!matchKey || this.inMapTransition(now)) {
@@ -266,15 +246,12 @@ export class Poller {
           { name: player.name, reason: ban.reason, queuedBy: ban.created_by }, true);
         this.emit('action', entry);
       } catch (err) {
-        // The game may already have banned them; kick anyway so the queued ban still bites.
         await this.rcon.kick(ban.steam_id, ban.reason || 'Banned').catch(() => {});
         this.store.notePendingBanError(ban.steam_id, errorMessage(err));
       }
     }
   }
 
-  // Players without a linked Steam account are kicked or banned. Bans it placed are lifted once the
-  // player links, or when ban mode is turned off, since a banned player could never get back in.
   async enforceWhitelist(now: number): Promise<void> {
     const { mode, message } = this.store.whitelist();
     let budget = WHITELIST_PER_TICK;
@@ -289,7 +266,6 @@ export class Poller {
         this.store.removeWhitelistBan(ban.steamId);
         this.emit('action', this.store.logAction('system', 'whitelist_unban', ban.steamId, { name: ban.name, why }, true));
       } catch (err) {
-        // Already lifted by hand in the ban list: nothing left to undo.
         const stillBanned = await this.rcon.bans().then((l) => l.some((b) => b.steamId === ban.steamId), () => true);
         if (stillBanned) this.store.noteWhitelistBanError(ban.steamId, errorMessage(err));
         else this.store.removeWhitelistBan(ban.steamId);
@@ -324,7 +300,6 @@ export class Poller {
     const s = this.status;
     if (!s) return null;
     const isKoth = (s.experiences || []).some((x) => /KOTH/i.test(x));
-    // Current builds send neither scoreCap nor matchSeconds; KOTH plays to 100 by default.
     const scoreCap = s.scoreCap ?? (isKoth ? 100 : null);
     return {
       scoreCap,

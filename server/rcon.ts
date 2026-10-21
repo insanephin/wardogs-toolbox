@@ -1,18 +1,12 @@
-// Client for the WARDOGS /v1 HTTP API (https://wardogs.tech/openapi.json). List edits the current
-// builds no longer have routes for go through the config document.
-
 import {
   reservedIdsInDoc, setReservedInDoc, rotationEntriesInDoc, setRotationInDoc,
   parseRotationEntry, formatRotationEntry, sameSelection, getValue, setValue,
 } from './inidoc.ts';
 import type { RotationSelection } from './inidoc.ts';
 
-// KOTH score tick ("Tick Timer" in the official console). Read at the start of each match.
-// GET /v1/status reports the value in force and the allowed range as scoreTick { current, min, max }.
 const SCORE_SECTION = 'MatchState.Playing.KOTH';
 const SCORE_KEY = 'ScorePeriod';
 
-// Response shapes list the fields this dashboard reads; the game sends more, passed through as-is.
 type Json = Record<string, any>;
 
 export interface GameStatus extends Json {
@@ -70,8 +64,6 @@ export interface MapSelection {
   zoneAlternator?: string;
 }
 
-export type Features = ReturnType<typeof RconClient.noFeatures>;
-
 export class RconError extends Error {
   status: number;
   code: string | undefined;
@@ -85,15 +77,12 @@ export class RconError extends Error {
   }
 }
 
-// Route templates differ between builds ({id} vs {steamId}, sometimes :id), so compare with
-// placeholders erased.
 function normalizeRoute(route: string): string {
   return String(route).trim().replace(/\{[^}]*\}|:[^/\s]+/g, '{}').replace(/\s+/g, ' ');
 }
 
 const seg = (v: string) => encodeURIComponent(v);
 
-// Omit what the caller left at default.
 function mapSelection({ map, experiences, lighting, zoneAlternator }: MapSelection): MapSelection {
   const body: MapSelection = { map };
   if (experiences?.length) body.experiences = experiences;
@@ -113,7 +102,7 @@ export class RconClient {
   baseUrl: string;
   password: string;
   timeoutMs: number;
-  holdUntil = 0; // set from 429 Retry-After
+  holdUntil = 0;
   capabilities: Capabilities | null = null;
   routes = new Set<string>();
   features = RconClient.noFeatures();
@@ -165,7 +154,6 @@ export class RconClient {
     }
 
     if (res.status === 429) {
-      // Hold 1-60s as stated, 5s when the header is absent.
       const sec = Number(res.headers.get('retry-after'));
       this.holdUntil = Date.now() + (Number.isFinite(sec) && sec > 0 ? Math.min(sec, 60) : 5) * 1000;
     }
@@ -181,7 +169,6 @@ export class RconClient {
     }
     if (!res.ok) {
       const e = body?.error ?? {};
-      // A route this build does not serve is not the same as a missing item.
       const code = e.code === 'not_found' ? 'no_route' : e.code;
       throw new RconError(res.status, code, e.message || body?.message || `요청 실패 (${res.status})`, body);
     }
@@ -264,8 +251,6 @@ export class RconClient {
     return this.send('POST', `/v1/players/${seg(steamId)}/kill`);
   }
 
-  // Like the official console: kill after the move so they respawn on the new side.
-  // No living character to kill is fine; `respawned` says whether it happened.
   async changeFaction(steamId: string, faction: string) {
     const moved = await this.send('PATCH', `/v1/players/${seg(steamId)}`, { faction });
     let respawned = true;
@@ -297,7 +282,6 @@ export class RconClient {
     return reservedIdsInDoc((await this.config()).text);
   }
 
-  // Older builds had routes for this; current ones only re-read the config list at restart.
   async setReserved(steamId: string, present: boolean) {
     if (this.features.reservedRoutes) {
       const r = present
@@ -382,7 +366,6 @@ export class RconClient {
     });
   }
 
-  // Puts the selection right after the entry now playing, reusing an identical entry if one exists.
   async setNextMap(selection: RotationSelection) {
     const live = await this.rotation();
     const now: number = (live.entries || []).findIndex((e: Json) => e.status === 'now');
@@ -429,7 +412,6 @@ export class RconClient {
     return this.configResult('PUT', '/v1/config', text, revision, { force: force ? 'true' : undefined });
   }
 
-  // 412 (stale revision) and 422 (rejected values) carry a ConfigResult body worth returning as-is.
   async configResult(method: string, path: string, text: string, revision?: string, query?: RequestOptions['query']): Promise<ConfigResult> {
     const headers: Record<string, string> = revision ? { 'If-Match': `"${revision}"` } : {};
     try {
@@ -443,8 +425,6 @@ export class RconClient {
     }
   }
 
-  // Read-modify-write of the whole document with a revision check.
-  // `mutate(text)` returns { text, message? }; throwing inside it aborts before anything is sent.
   async editConfig(mutate: (text: string) => { text: string; message?: string }): Promise<Json & { unchanged?: boolean; message?: string }> {
     const live = await this.config();
     const { text, message } = mutate(live.text);

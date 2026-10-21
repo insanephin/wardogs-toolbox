@@ -1,6 +1,4 @@
 {
-  // Server code runs as-is through Node's type stripping, so only erasable syntax is allowed
-  // (no enums, namespaces or constructor parameter properties).
   "compilerOptions": {
     "target": "es2023",
     "lib": ["es2023"],

@@ -1,15 +1,9 @@
-// Things the event feed does not tell us, and how they are filled in:
-// - No faction on either side: looked up from the last polled player list.
-// - Only a match clock (eventTime): the wall-clock time is the moment we received it.
-// - matchId stayed the same across map changes on older builds, so matches are keyed
-//   by our own matchKey, which turns over on a map change or a clock reset.
-
 import { weaponName } from './weapons.ts';
 import type { WeaponNames } from './weapons.ts';
 import type { Store, Kill, MatchEvent, OpenEngagement, Engagement } from './store.ts';
 import type { Emit } from './http.ts';
 
-const IGNORED_TAGS = new Set(['Kill', 'Death']); // constant Local.Kill / Local.Death flags
+const IGNORED_TAGS = new Set(['Kill', 'Death']);
 const CLOCK_RESET_SEC = 30;
 const RESUME_MATCH_WITHIN_MS = 10 * 60 * 1000;
 
@@ -17,7 +11,6 @@ function shortTag(tag: unknown): string {
   return String(tag).replace(/^.*\./, '');
 }
 
-// A batch as the game posts it. Events are checked one by one, since anything can arrive here.
 export interface FeedBatch {
   serverName?: string;
   events?: unknown;
@@ -37,11 +30,11 @@ interface FeedEvent extends MatchEvent {
 
 interface FeedOptions {
   store: Store;
-  weapons?: WeaponNames;
-  gapSec?: number;
-  minKills?: number;
-  factionOf?: (steamId: string) => string | null;
-  emit?: Emit;
+  weapons: WeaponNames;
+  gapSec: number;
+  minKills: number;
+  factionOf: (steamId: string) => string | null;
+  emit: Emit;
 }
 
 export class FeedProcessor {
@@ -62,7 +55,7 @@ export class FeedProcessor {
   batches = 0;
   rejected = 0;
 
-  constructor({ store, weapons = {}, gapSec = 15, minKills = 3, factionOf = () => null, emit = () => {} }: FeedOptions) {
+  constructor({ store, weapons, gapSec, minKills, factionOf, emit }: FeedOptions) {
     this.store = store;
     this.weapons = weapons;
     this.gapSec = gapSec;
@@ -70,7 +63,6 @@ export class FeedProcessor {
     this.factionOf = factionOf;
     this.emit = emit;
 
-    // Survive a dashboard restart mid-match without splitting the match's stats.
     const last = store.lastKill();
     const seen = store.lastMatchPlayer();
     if (last && Date.now() - last.receivedAt < RESUME_MATCH_WITHIN_MS && !(seen && seen.lastSeen > last.receivedAt && seen.matchKey !== last.matchKey)) {
@@ -78,7 +70,6 @@ export class FeedProcessor {
       this.map = last.map;
       this.lastEventTime = last.eventTime;
     } else if (seen && Date.now() - seen.lastSeen < RESUME_MATCH_WITHIN_MS) {
-      // No recent kills (or no feed at all), but the scoreboard was being recorded.
       this.matchKey = seen.matchKey;
       this.map = seen.map;
     }
@@ -152,12 +143,10 @@ export class FeedProcessor {
       victimFaction,
       cause: e.cause ?? null,
       weapon: weaponName(this.weapons, e.cause),
-      // Unreal units are centimetres; absent on vehicle explosions and most suicides.
       distanceM: typeof e.distance === 'number' ? Math.round(e.distance) / 100 : null,
       tags,
       headshot: tags.includes('Headshot'),
       suicide: !!suicide,
-      // An estimate: factions come from polling, which lags and blanks out after a map change.
       teamkill: !suicide && !!killer && !!killerFaction && killerFaction === victimFaction,
       engagementId: null,
     };
@@ -221,7 +210,6 @@ export class FeedProcessor {
     if (!this.store.insertMatchEvent(e, at)) return false;
     if (e.type === 'match_state') {
       const prev = this.matchState?.state ?? '';
-      // A new pre-match after play or post-match is a new match even on the same map.
       if (e.state?.startsWith('MatchState.PreMatch') && !prev.startsWith('MatchState.PreMatch') && prev) {
         this.newMatch(e.mapName, at);
       }

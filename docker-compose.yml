@@ -1,17 +1,6 @@
-# WARDOGS dashboard. No image build: the project folder is mounted as-is.
-#   Real server:  fill in .env, then
-#                   docker compose run --rm dashboard npm run check   # connection test
-#                   docker compose up -d
-#
-# Applying changes:
-#   UI (web/):       npm run build   -> served from dist/ on the next page load, no restart
-#   Server (server/): restarts itself (node --watch)
-#   .env:            docker compose up -d
-# Data lives in ./data on the host (dashboard.db).
 x-app: &app
   image: node:22.13-bookworm-slim
   working_dir: /app
-  # Run as the host user so files written to ./data stay editable on the host.
   user: "${DOCKER_USER:-1000:1000}"
   volumes:
     - ./:/app
@@ -27,33 +16,13 @@ services:
     environment:
       DASH_HOST: 0.0.0.0
       DASH_PORT: 8080
+      TRUST_PROXY: "true"
+      COOKIE_SECURE: "true"
       DB_PATH: /app/data/dashboard.db
-      BOT_URL: http://bot:8081
     networks:
       - app
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  bot:
-    <<: *app
-    image: python:3.12-slim
-    working_dir: /app/bot
-    command:
-      - sh
-      - -c
-      - python -m venv .venv && .venv/bin/pip install -q --disable-pip-version-check -r requirements.txt && exec .venv/bin/python main.py
-    env_file:
-      - path: .env
-        required: true
-    environment:
-      HOME: /tmp
-      PYTHONUNBUFFERED: "1"
-      BOT_HTTP_HOST: 0.0.0.0
-      BOT_HTTP_PORT_INTERNAL: 8081
-      # Shared with the dashboard so it can join account_links against players.
-      DB_PATH: /app/data/dashboard.db
-    networks:
-      - app
 
   cloudflared:
     image: cloudflare/cloudflared:latest

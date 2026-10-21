@@ -33,7 +33,6 @@ export async function readBody(req: IncomingMessage, limit: number): Promise<Buf
   return Buffer.concat(chunks);
 }
 
-// Request bodies are untrusted JSON; handlers check each field they read.
 export type Body = Record<string, any>;
 
 export async function readJson(req: IncomingMessage, limit = 256 * 1024): Promise<Body> {
@@ -46,16 +45,35 @@ export async function readJson(req: IncomingMessage, limit = 256 * 1024): Promis
   }
 }
 
+export function requireText(value: unknown, field: string, max: number, { optional = false } = {}): string {
+  const s = typeof value === 'string' ? value.trim() : '';
+  const n = [...s].length;
+  if (!s && !optional) throw new HttpError(400, 'missing_field', `${field}을(를) 입력하세요`);
+  if (n > max) throw new HttpError(400, 'too_long', `${field}은(는) 최대 ${max}자입니다 (현재 ${n}자)`);
+  return s;
+}
+
+function decode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    throw new HttpError(400, 'bad_encoding', '잘못된 URL 인코딩입니다');
+  }
+}
+
 export function parseCookies(header = ''): Record<string, string> {
   const out: Record<string, string> = {};
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    try {
+      out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    } catch {}
   }
   return out;
 }
 
-export interface RouteContext {
+interface RouteContext {
   req: IncomingMessage;
   res: ServerResponse;
   params: Record<string, string>;
@@ -65,7 +83,7 @@ export interface RouteContext {
   sessionId: string | undefined;
 }
 
-export interface RouteOptions {
+interface RouteOptions {
   role?: Role;
   public?: boolean;
   stream?: boolean;
@@ -101,7 +119,7 @@ export class Router {
         continue;
       }
       const params: Record<string, string> = {};
-      r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1] ?? '')));
+      r.keys.forEach((k, i) => (params[k] = decode(m[i + 1] ?? '')));
       return { route: r, params };
     }
     return methodMismatch ? { methodMismatch: true } : null;
@@ -127,7 +145,13 @@ export const SECURITY_HEADERS = {
 
 export async function serveStatic(root: string, urlPath: string, res: ServerResponse): Promise<boolean> {
   const base = resolve(root);
-  const rel = normalize(decodeURIComponent(urlPath)).replace(/^([/\\])+/, '');
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(urlPath);
+  } catch {
+    return false;
+  }
+  const rel = normalize(decoded).replace(/^([/\\])+/, '');
   let file = resolve(join(base, rel || 'index.html'));
   if (!file.startsWith(base)) return false;
   try {
@@ -145,7 +169,7 @@ export async function serveStatic(root: string, urlPath: string, res: ServerResp
   }
 }
 
-export interface SseClient {
+interface SseClient {
   res: ServerResponse;
   session: Session;
   sessionId: string | undefined;

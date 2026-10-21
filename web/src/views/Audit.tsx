@@ -3,6 +3,7 @@ import type { Action, ActionDetail, Audit as AuditData, FeedEvent, FeedRequestRo
 import { api, errorMessage } from '../lib/api.ts';
 import { fmtTime, ACTION_LABELS, describeEvent } from '../lib/format.ts';
 import { Card, Empty, useOnAction } from '../components/common.tsx';
+import { Spinner } from '../components/spinner.tsx';
 
 const TABS = [['dashboard', '대시보드 작업'], ['rcon', 'RCON 접속 로그'], ['feedRequests', '피드 수신 기록'], ['feedEvents', '피드 이벤트']];
 
@@ -34,7 +35,7 @@ export default function Audit() {
         </div>
       </div>
       <div className="card-body">
-        {!data ? <Empty>불러오는 중…</Empty>
+        {!data ? <Empty><Spinner /></Empty>
           : tab === 'dashboard' ? <DashboardLog rows={data.dashboard} />
             : tab === 'rcon' ? <RconLog data={data} />
               : tab === 'feedRequests' ? <FeedRequestLog rows={data.feedRequests} />

@@ -1,5 +1,3 @@
-// Imperative dialogs: `await modal({...})` resolves with the form values or null, so action
-// handlers read top to bottom. <ModalHost/> renders whatever is open.
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChangeEvent, FormEvent, HTMLAttributes, ReactNode } from 'react';
 import { charCount } from './format.ts';
@@ -17,7 +15,6 @@ const emit = (next: Dialog[]) => {
   for (const l of listeners) l();
 };
 
-// render(close) returns the dialog element. Returns close().
 export function openDialog(render: (close: () => void) => ReactNode): () => void {
   const id = ++seq;
   const close = () => emit(dialogs.filter((d) => d.id !== id));
@@ -30,7 +27,6 @@ export function ModalHost() {
   return list.map((d, i) => <IsTop.Provider key={d.id} value={i === list.length - 1}>{d.render()}</IsTop.Provider>);
 }
 
-// Only the topmost dialog answers Escape.
 const IsTop = createContext(true);
 
 export function Overlay({ label, wide = false, onClose, children }: { label: string; wide?: boolean; onClose: () => void; children: ReactNode }) {
@@ -51,7 +47,7 @@ export function Overlay({ label, wide = false, onClose, children }: { label: str
   );
 }
 
-export interface Field {
+interface Field {
   name: string;
   label?: string;
   type?: 'text' | 'textarea' | 'select' | 'checkbox';
@@ -65,8 +61,7 @@ export interface Field {
   inputmode?: HTMLAttributes<HTMLInputElement>['inputMode'];
 }
 
-// Text fields come back trimmed, checkboxes as booleans.
-export type FormValues = Record<string, string | boolean>;
+type FormValues = Record<string, string | boolean>;
 
 interface ModalOptions {
   title: string;
@@ -107,7 +102,6 @@ function FormModal({ title, body = null, fields = [], confirm = '확인', danger
 
   useEffect(() => {
     (refs.current[fields[0]?.name ?? ''] || submitRef.current)?.focus();
-    // Focus once on open only.
   }, []);
 
   const set = (name: string, v: string | boolean) => setValues((s) => ({ ...s, [name]: v }));

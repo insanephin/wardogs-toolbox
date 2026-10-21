@@ -3,7 +3,6 @@ import type { CSSProperties, ReactNode } from 'react';
 import type { Action } from '../lib/types.ts';
 import { useStore } from '../lib/store.ts';
 
-// Re-renders every `ms` so "N초 전" labels stay fresh between events.
 export function useNow(ms = 5000): number {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -50,7 +49,6 @@ export function Fdot({ color }: { color: string | null | undefined }) {
 
 export const Empty = ({ children }: { children: ReactNode }) => <p className="empty">{children}</p>;
 
-// Runs `fn` whenever a new dashboard action arrives over the stream (not for ones seen before mount).
 export function useOnAction(fn: (a: Action) => unknown): void {
   const latest = useStore((s) => s.lastAction);
   const seen = useRef(latest);

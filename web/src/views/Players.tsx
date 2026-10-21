@@ -33,7 +33,7 @@ export default function Players() {
   const q = search.trim().toLowerCase();
   const list = (live?.players || [])
     .filter((p) => !faction || p.faction === faction)
-    .filter((p) => !q || p.name.toLowerCase().includes(q) || p.steamId.includes(q) || p.link?.discordName?.toLowerCase().includes(q))
+    .filter((p) => !q || p.name.toLowerCase().includes(q) || p.steamId.includes(q) || p.link?.chzzkName?.toLowerCase().includes(q))
     .map((p) => {
       const s = stats.get(p.steamId);
       return {
@@ -41,7 +41,7 @@ export default function Players() {
         kd: p.deaths ? p.kills / p.deaths : p.kills,
         hs: s ? pct(s.headshots, s.kills) : null,
         session: p.joinedAt ? (now - p.joinedAt) / 1000 : null,
-        linked: p.link?.discordName ?? (p.link ? p.link.discordId : ''),
+        linked: p.link ? p.link.chzzkName ?? p.link.chzzkChannelId : '',
       };
     })
     .sort((a, b) => {
@@ -57,7 +57,7 @@ export default function Players() {
   return (
     <Card title="접속 중인 플레이어" extra={<span className="muted small">{live?.status ? `${live.status.players.current} / ${live.status.players.max}명` : ''}</span>}>
       <div className="toolbar">
-        <input type="search" placeholder="이름, SteamID 또는 디스코드" aria-label="플레이어 검색" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input type="search" placeholder="이름, SteamID 또는 치지직" aria-label="플레이어 검색" value={search} onChange={(e) => setSearch(e.target.value)} />
         <div className="seg" role="group" aria-label="진영 필터">
           <button type="button" className={faction ? '' : 'on'} onClick={() => setFaction('')}>{`전체 ${live?.players?.length ?? 0}`}</button>
           {factionNames.map((n) => (
@@ -117,10 +117,7 @@ export default function Players() {
 function LinkCell({ link }: { link: Link | null }) {
   if (!link) return <span className="tag tag-danger">미연동</span>;
   return (
-    <>
-      <div className="small">{link.discordName || link.discordId}</div>
-      {link.chzzkName ? <div className="muted small">{`치지직 ${link.chzzkName}`}</div> : null}
-    </>
+    <div className="small">{`치지직 ${link.chzzkName || link.chzzkChannelId}`}</div>
   );
 }
 
@@ -136,7 +133,6 @@ function PlayerDialog({ p, profile, close }: { p: Player; profile: PlayerProfile
   const t: PlayerProfile['totals'] = profile?.totals || {};
   const canMove = serves(caps, 'PATCH /v1/players/{id}');
 
-  // Close first so the follow-up dialog isn't stacked on top of this one.
   const act = (fn: () => Promise<void>) => async () => {
     close();
     await fn();
@@ -159,8 +155,7 @@ function PlayerDialog({ p, profile, close }: { p: Player; profile: PlayerProfile
             <div><b>{fmtNum(t.teamkills ?? 0)}</b><span>팀킬 추정</span></div>
           </div>
         </div>
-        <LinkInfo link={p.link} />
-        {profile?.player ? <p className="muted small">{`처음 본 날 ${fmtTime(profile.player.first_seen)} · 세션 ${profile.player.sessions}회`}</p> : null}
+        <InfoTable link={p.link} seen={profile?.player ?? null} />
         {profile && profile.names.length > 1 ? <p className="small">사용한 이름: {profile.names.map((n) => n.name).join(', ')}</p> : null}
         {profile?.weapons?.length ? <p className="small">주무기: {profile.weapons.slice(0, 5).map((w) => `${w.weapon} ${w.kills}`).join(', ')}</p> : null}
         {can('mod') ? (
@@ -178,17 +173,23 @@ function PlayerDialog({ p, profile, close }: { p: Player; profile: PlayerProfile
   );
 }
 
-function LinkInfo({ link }: { link: Link | null }) {
-  if (!link) return <p className="small"><span className="tag tag-danger">미연동</span> 디스코드에서 스팀 계정을 연동하지 않았습니다.</p>;
+function InfoTable({ link, seen }: { link: Link | null; seen: PlayerProfile['player'] }) {
   return (
-    <dl className="kv small">
-      <dt>디스코드</dt><dd>{link.discordName || '—'} <span className="mono muted">{link.discordId}</span></dd>
-      <dt>스팀 연동</dt><dd>{`${link.steamName ?? '—'} · ${fmtTime(link.steamLinkedAt)}`}</dd>
-      <dt>치지직</dt>
-      <dd>{link.chzzkChannelId
-        ? <a className="link" href={`https://chzzk.naver.com/${link.chzzkChannelId}`} target="_blank" rel="noopener noreferrer">{link.chzzkName || link.chzzkChannelId}</a>
-        : <span className="muted">미연동</span>}</dd>
-    </dl>
+    <table className="table table-info small">
+      <tbody>
+        <tr>
+          <th scope="row">치지직</th>
+          <td>{link
+            ? <a className="link" href={`https://chzzk.naver.com/${link.chzzkChannelId}`} target="_blank" rel="noopener noreferrer">{link.chzzkName || link.chzzkChannelId}</a>
+            : <><span className="tag tag-danger">미연동</span> <span className="muted">연동 페이지(/)에서 연동하지 않았습니다.</span></>}</td>
+        </tr>
+        {link ? <tr><th scope="row">스팀 이름</th><td>{link.steamName ?? '—'}</td></tr> : null}
+        <tr><th scope="row">인증 시간</th><td>{fmtTime(link?.linkedAt)}</td></tr>
+        <tr><th scope="row">최초 접속</th><td>{fmtTime(seen?.first_seen)}</td></tr>
+        <tr><th scope="row">마지막 접속</th><td>{fmtTime(seen?.last_seen)}</td></tr>
+        <tr><th scope="row">세션</th><td>{seen ? `${seen.sessions}회` : '—'}</td></tr>
+      </tbody>
+    </table>
   );
 }
 

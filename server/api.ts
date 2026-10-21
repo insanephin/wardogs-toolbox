@@ -1,8 +1,6 @@
-// Dashboard API. Every write goes through act(), which logs it and tells live viewers.
-
 import { timingSafeEqual } from 'node:crypto';
 import { hasRole } from './auth.ts';
-import { HttpError, readBody, errorMessage } from './http.ts';
+import { HttpError, readBody, errorMessage, requireText } from './http.ts';
 import type { Router, Handler, SseHub, Body } from './http.ts';
 import { WHITELIST_MODES } from './store.ts';
 import type { Store, WhitelistMode, FeedRequest } from './store.ts';
@@ -14,29 +12,16 @@ import type { FeedProcessor, FeedBatch } from './feed.ts';
 import type { Config } from './config.ts';
 import type { IncomingMessage } from 'node:http';
 
-// Since update 0.1.2 the game refuses chat over 256 characters; reasons are kept at 200 like other panels.
 const MAX_CHAT = 256;
 const MAX_REASON = 200;
 const FEED_BODY_LIMIT = 1024 * 1024;
 const STEAM_ID = /^\d{17}$/;
-
-function chars(s: string): number {
-  return [...s].length;
-}
 
 function requireSteamId(id: string): string {
   if (!STEAM_ID.test(id)) throw new HttpError(400, 'bad_steam_id', 'SteamID64(17자리 숫자)가 아닙니다');
   return id;
 }
 
-function requireText(value: unknown, field: string, max: number, { optional = false } = {}): string {
-  const s = typeof value === 'string' ? value.trim() : '';
-  if (!s && !optional) throw new HttpError(400, 'missing_field', `${field}을(를) 입력하세요`);
-  if (chars(s) > max) throw new HttpError(400, 'too_long', `${field}은(는) 최대 ${max}자입니다 (현재 ${chars(s)}자)`);
-  return s;
-}
-
-// Map selection as the game takes it for /v1/match/map and as rotation entries store it.
 function readSelection(body: Body): MapSelection {
   const sel: MapSelection = { map: requireText(body.map, '맵', 128) };
   if (Array.isArray(body.experiences) && body.experiences.length) sel.experiences = body.experiences.map(String);
@@ -46,24 +31,6 @@ function readSelection(body: Body): MapSelection {
 }
 
 const selectionForRotation = (sel: MapSelection): RotationSelection => ({ ...sel, alternator: sel.zoneAlternator });
-
-// Public leaderboard. Ratios only rank players with enough games behind them, or one lucky match wins.
-const LEADERBOARD_MIN = { kd: 20, headshotRate: 30, winRate: 5 };
-const LEADERBOARD_CACHE_MS = 30_000;
-const PUBLIC_LIVE_CACHE_MS = 5_000;
-const KST_MS = 9 * 3600_000;
-
-// Weeks start Monday 00:00 and months on the 1st, both in Korean time.
-type Period = 'week' | 'month' | 'all';
-
-function periodStart(period: Period, now = Date.now()): number {
-  const d = new Date(now + KST_MS);
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  if (period === 'week') return Date.UTC(y, m, d.getUTCDate() - ((d.getUTCDay() + 6) % 7)) - KST_MS;
-  if (period === 'month') return Date.UTC(y, m, 1) - KST_MS;
-  return 0;
-}
 
 function tokenMatches(given: string, expected: string): boolean {
   if (!expected) return false;
@@ -153,7 +120,6 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     const id = requireSteamId(String(body.steamId ?? '').trim());
     const reason = requireText(body.reason, '사유', MAX_REASON, { optional: true });
     const online = poller.players.some((p) => p.steamId === id);
-    // The game only bans players who are connected. Others wait in a queue enforced on join.
     if (!online && body.queueIfOffline !== false) {
       return act(session, 'ban_queued', id, { reason }, async () => {
         store.addPendingBan(id, reason, session.name);
@@ -179,7 +145,6 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     const id = requireSteamId(params.steamId);
     return act(session, 'unban', id, null, async () => {
       const r = await rcon.unban(id);
-      // Some builds answer success without lifting the ban; read the list back to be sure.
       const stillBanned = (await rcon.bans()).some((b) => b.steamId === id);
       if (stillBanned) {
         throw new HttpError(502, 'unban_not_applied', '서버가 해제 완료라고 답했지만 밴 목록에 아직 남아 있습니다. 다시 시도하거나 설정 문서를 확인하세요.');
@@ -194,6 +159,15 @@ export function registerApi(router: Router, ctx: ApiContext): void {
   });
 
   route('GET', '/api/links', 'viewer', () => store.links());
+
+  route('DELETE', '/api/links/:steamId', 'mod', ({ params, session }) => {
+    const id = requireSteamId(params.steamId);
+    return act(session, 'unlink', id, null, async () => {
+      store.unlink(id);
+      poller.nudge();
+      return { ok: true };
+    });
+  });
 
   route('GET', '/api/whitelist', 'viewer', () => ({ ...store.whitelist(), bans: store.whitelistBans() }));
 
@@ -243,8 +217,6 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     return act(session, 'set_lighting', lighting, null, () => rcon.setLighting(lighting));
   });
 
-  // Rotation edits rewrite RotationEntries in the config document; the server rebuilds the rotation
-  // at once and uses it from the next map change.
   const requireConfigWrite = () => {
     if (rcon.capabilities && !rcon.features.configDocument) {
       throw new HttpError(501, 'config_read_only', '이 서버는 설정 문서 쓰기를 막아 두어 로테이션을 편집할 수 없습니다');
@@ -277,7 +249,6 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     return act(session, 'rotation_remove', String(index + 1), null, () => rcon.removeRotationEntry(index));
   });
 
-  // `saved` is what the config document holds (used from the next match); `current` is in force now.
   const scoreRange = (): [number, number] => {
     const { min, max } = poller.status?.scoreTick ?? {};
     return Number.isFinite(min) && Number.isFinite(max) ? [min!, max!] : [18, 30];
@@ -331,77 +302,6 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     };
   });
 
-  // Public pages: no login, so these are cached and never return SteamIDs, Discord IDs or anyone
-  // who has not linked a Chzzk channel.
-  const cached = <K, V>(ms: number, fn: (key: K) => V) => {
-    const memo = new Map<K, { at: number; data: V }>();
-    return (key: K): V => {
-      const hit = memo.get(key);
-      if (hit && Date.now() - hit.at < ms) return hit.data;
-      const data = fn(key);
-      memo.set(key, { at: Date.now(), data });
-      return data;
-    };
-  };
-
-  const leaderboard = cached(LEADERBOARD_CACHE_MS, (period: Period) => {
-    const since = periodStart(period);
-    const rows = store.leaderboard(since).map((r) => ({
-      channelId: r.channelId,
-      name: r.name,
-      matches: r.matches,
-      kills: r.kills,
-      deaths: r.deaths,
-      kd: r.deaths ? r.kills / r.deaths : r.kills,
-      cashEarned: r.cashEarned,
-      cashPeak: r.cashPeak,
-      wins: r.wins,
-      decided: r.decided,
-      winRate: r.decided ? r.wins / r.decided : null,
-      headshots: r.headshots,
-      headshotRate: r.feedKills ? r.headshots / r.feedKills : null,
-      feedKills: r.feedKills,
-      longest: r.longest,
-      lastSeen: r.lastSeen,
-    }));
-    return { period, since, updatedAt: Date.now(), minimums: LEADERBOARD_MIN, rows };
-  });
-
-  const publicLive = cached(PUBLIC_LIVE_CACHE_MS, () => {
-    const s = poller.status;
-    const players = poller.playersView();
-    const cashOk = !poller.cashUnreliable();
-    return {
-      online: poller.online,
-      serverName: s?.serverName ?? null,
-      map: s?.map ?? null,
-      playerCount: s?.players?.current ?? players.length,
-      maxPlayers: s?.players?.max ?? null,
-      factionScores: (s?.factionScores || []).map((f) => ({ name: f.name, score: f.score, colorHex: f.colorHex })),
-      scoreCap: poller.matchView()?.scoreCap ?? null,
-      matchState: feed.matchState?.state ?? null,
-      players: players.filter((p) => p.link?.chzzkChannelId).map((p) => ({
-        channelId: p.link!.chzzkChannelId,
-        name: p.link!.chzzkName,
-        faction: p.faction || null,
-        kills: p.kills ?? 0,
-        deaths: p.deaths ?? 0,
-        cash: cashOk ? p.cash ?? null : null,
-      })),
-      updatedAt: poller.lastPollAt,
-    };
-  });
-
-  router.add('GET', '/api/public/leaderboard', { public: true }, ({ query }) => {
-    const q = query.get('period');
-    const period: Period = q === 'month' || q === 'all' ? q : 'week';
-    return leaderboard(period);
-  });
-  router.add('GET', '/api/public/live', { public: true }, () => publicLive('live'));
-
-  // Season 2 posts to EventFeedEndpoints Url exactly as written; older builds appended the suffix
-  // to a base Url. Both spellings land here.
-  // Every request is logged for the audit page, including ones rejected before parsing.
   const ingest: Handler = async ({ req }) => {
     const log: FeedRequest = { at: Date.now(), peer: req.socket.remoteAddress, status: 0 };
     try {

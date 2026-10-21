@@ -13,15 +13,29 @@ import { FeedProcessor } from './feed.ts';
 import { Poller } from './poller.ts';
 import { loadWeaponNames } from './weapons.ts';
 import { registerApi } from './api.ts';
+import { createLinking } from './link.ts';
+import { registerReports } from './report.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wd_session';
-// Cross-site pages cannot set custom headers, so requiring one blocks CSRF on writes.
 const CSRF_HEADER = 'x-requested-with';
+const PUBLIC_DIST = join(ROOT, 'dist/public');
+const ADMIN_DIST = join(ROOT, 'dist/admin');
+const PUBLIC_PAGES = new Set(['/', '/report']);
+const POLICY_URL = 'https://insanephin.xyz/projects/wardogs-rcon';
+const POLICY_PAGES = new Set(['/terms', '/privacy']);
+
+function notFound(url: URL, res: ServerResponse) {
+  if (/^\/(rcon\/)?assets\//.test(url.pathname)) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
+    return res.end('페이지를 찾을 수 없습니다');
+  }
+  res.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
+  res.end();
+}
 
 export function createApp(config: Config) {
-  if (!config.users) throw new Error('DASH_USERS is empty; set at least one name:role:password');
-  const auth = new Auth(config.users);
+  const auth = new Auth(config.admins);
   const store = new Store(config.dbPath);
   const hub = new SseHub();
   const rcon = new RconClient({ baseUrl: config.rconUrl, password: config.rconPassword });
@@ -39,20 +53,43 @@ export function createApp(config: Config) {
 
   const router = new Router();
   registerApi(router, { rcon, store, poller, feed, hub, config });
+  const clientIp = (req: IncomingMessage): string | undefined => {
+    const cf = req.headers['cf-connecting-ip'];
+    return config.trustProxy && typeof cf === 'string' && cf ? cf : req.socket.remoteAddress;
+  };
+  const adminAllowed = (req: IncomingMessage) => !config.adminAllowIps.length || config.adminAllowIps.includes(clientIp(req) ?? '');
 
   const cookie = (value: string, maxAge: number) =>
     `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${config.cookieSecure ? '; Secure' : ''}`;
 
-  router.add('POST', '/api/login', { public: true }, async ({ body, req, res }) => {
-    const r = auth.login(String(body.name ?? ''), body.password, req.socket.remoteAddress);
-    if (r.error === 'too_many_attempts') throw new HttpError(429, r.error, '로그인 실패가 반복돼 1분간 잠겼습니다');
-    if (r.error) throw new HttpError(401, r.error, '이름 또는 비밀번호가 틀렸습니다');
-    res.setHeader('Set-Cookie', cookie(r.id, 12 * 3600));
-    return r.user;
+  const endPanelSession = (sid: string | undefined) => {
+    auth.logout(sid);
+    hub.closeSession(sid);
+  };
+  const linking = createLinking(config, store, {
+    allowed: adminAllowed,
+    sessionOf: (req) => {
+      const sid = parseCookies(req.headers.cookie)[COOKIE];
+      return auth.session(sid) ? sid : undefined;
+    },
+    login: (account, previous) => {
+      endPanelSession(previous);
+      const id = auth.login(account.id, account.name);
+      return { ok: !!id, cookie: id ? cookie(id, 12 * 3600) : previous ? cookie('', 0) : null };
+    },
+    proven: (account, previous) => {
+      const s = auth.session(previous);
+      if (!s || s.channelId === account.id) return null;
+      console.log(`[관리자] 다른 치지직 계정(${account.name})으로 로그인해 ${s.name}의 패널 세션을 끝냈습니다`);
+      endPanelSession(previous);
+      return cookie('', 0);
+    },
   });
+  linking.register(router);
+  registerReports(router, { store, poller, hub, configured: linking.configured, accounts: linking.accounts });
+
   router.add('POST', '/api/logout', { public: true }, ({ sessionId, res }) => {
-    auth.logout(sessionId);
-    hub.closeSession(sessionId);
+    endPanelSession(sessionId);
     res.setHeader('Set-Cookie', cookie('', 0));
     return { ok: true };
   });
@@ -64,45 +101,15 @@ export function createApp(config: Config) {
     poller.nudge();
   });
 
-  // Forwards account-link callbacks to the bot. Cookies are not passed on, so the bot never sees
-  // an admin session, and a missing bot is a plain 404 rather than the dashboard's login page.
-  async function proxyCallback(url: URL, req: IncomingMessage, res: ServerResponse) {
-    if (!config.botUrl || req.method !== 'GET') return sendJson(res, 404, { error: { code: 'not_found' } });
-    let upstream;
-    try {
-      upstream = await fetch(config.botUrl + url.pathname + url.search, { signal: AbortSignal.timeout(20000) });
-    } catch {
-      res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-      return res.end('연동 서버에 연결할 수 없습니다. 잠시 후 디스코드에서 다시 시도해주세요.');
-    }
-    res.writeHead(upstream.status, {
-      ...SECURITY_HEADERS,
-      // The result page is static HTML with inline styles and no scripts.
-      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-      'Content-Type': upstream.headers.get('content-type') || 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store',
-      // The OAuth code and state are in this URL; keep them out of other sites' logs.
-      'Referrer-Policy': 'no-referrer',
-    });
-    res.end(Buffer.from(await upstream.arrayBuffer()));
-  }
-
-  async function handle(req: IncomingMessage, res: ServerResponse) {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname.startsWith('/callback/')) return proxyCallback(url, req, res);
-    if (!url.pathname.startsWith('/api/')) {
-      if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: { code: 'method_not_allowed' } });
-      if (await serveStatic(join(ROOT, 'dist'), url.pathname, res)) return;
-      // Unknown paths fall back to the app shell so deep links work.
-      if (await serveStatic(join(ROOT, 'dist'), '/index.html', res)) return;
-      return sendJson(res, 404, { error: { code: 'not_built', message: '화면이 빌드되지 않았습니다. npm run build 를 먼저 실행하세요' } });
-    }
-
+  async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     const m = router.match(req.method, url.pathname);
     if (!m) return sendJson(res, 404, { error: { code: 'not_found', message: '없는 API입니다' } });
     if ('methodMismatch' in m) return sendJson(res, 405, { error: { code: 'method_not_allowed' } });
     const { route, params } = m;
 
+    if (!route.opts.public && !adminAllowed(req)) {
+      return sendJson(res, 404, { error: { code: 'not_found', message: '없는 API입니다' } });
+    }
     const sessionId = parseCookies(req.headers.cookie)[COOKIE];
     const session = auth.session(sessionId);
     if (!route.opts.public) {
@@ -114,10 +121,34 @@ export function createApp(config: Config) {
     }
 
     const body = req.method !== 'GET' && !route.opts.rawBody ? await readJson(req) : {};
-    // session is null only on public routes, which never read it.
     const result = await route.handler({ req, res, params, query: url.searchParams, body, session: session as Session, sessionId });
     if (route.opts.stream) return;
     sendJson(res, 200, result ?? { ok: true }, SECURITY_HEADERS);
+  }
+
+  async function serveShell(dist: string, file: string, res: ServerResponse) {
+    if (await serveStatic(dist, file, res)) return;
+    sendJson(res, 503, { error: { code: 'not_built', message: '화면이 빌드되지 않았습니다. npm run build 를 먼저 실행하세요' } });
+  }
+
+  async function handle(req: IncomingMessage, res: ServerResponse) {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (await linking.handle(url, req, res)) return;
+    if (url.pathname.startsWith('/api/')) return handleApi(req, res, url);
+    if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: { code: 'method_not_allowed' } });
+    const path = url.pathname.replace(/\/+$/, '') || '/';
+    if (PUBLIC_PAGES.has(path)) return serveShell(PUBLIC_DIST, '/index.html', res);
+    if (POLICY_PAGES.has(path)) {
+      res.writeHead(302, { Location: `${POLICY_URL}${path}`, 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
+      return res.end();
+    }
+    if (url.pathname.startsWith('/assets/') && await serveStatic(PUBLIC_DIST, url.pathname, res)) return;
+    if (path === '/rcon' || url.pathname.startsWith('/rcon/assets/')) {
+      if (!adminAllowed(req)) return notFound(url, res);
+      if (path === '/rcon') return serveShell(ADMIN_DIST, '/admin.html', res);
+      if (await serveStatic(ADMIN_DIST, url.pathname.slice('/rcon'.length), res)) return;
+    }
+    notFound(url, res);
   }
 
   const onError = (res: ServerResponse) => (err: unknown) => {
@@ -126,8 +157,6 @@ export function createApp(config: Config) {
       return sendJson(res, err.status, { error: { code: err.code, message: err.message }, ...(err.extra ? { result: err.extra } : {}) });
     }
     if (err instanceof RconError) {
-      // Upstream failures: the game server refused or was unreachable. A stale config revision is a
-      // conflict the admin can retry, and a check the client made before sending is the caller's fault.
       const status = err.status === 429 ? 429 : err.status === 0 ? 504 : err.status === 412 ? 409 : err.code === 'bad_index' ? 400 : 502;
       return sendJson(res, status, { error: { code: err.code || 'rcon_error', message: err.message, upstreamStatus: err.status } });
     }
@@ -137,7 +166,7 @@ export function createApp(config: Config) {
 
   const server = createServer((req, res) => handle(req, res).catch(onError(res)));
 
-  return { server, auth, store, poller, feed, hub, rcon };
+  return { server, auth, poller };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -145,14 +174,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const app = createApp(config);
   if (!config.rconPassword) console.warn('[경고] RCON_PASSWORD가 비어 있습니다. 게임 서버가 인증을 거부할 것입니다.');
   if (!config.feedToken) console.warn('[경고] FEED_TOKEN이 비어 있어 이벤트 피드를 받지 않습니다.');
+  if (!app.auth.admins.size) console.warn('[경고] ADMIN_CHZZK_IDS가 비어 있어 아무도 관리자 패널에 로그인할 수 없습니다.');
+  if (!config.chzzk.clientId || !config.chzzk.clientSecret || !config.chzzk.redirectUrl) {
+    console.warn('[경고] 치지직 앱 설정이 비어 있어 관리자 패널에 로그인할 수 없습니다.');
+  }
   if (config.host !== '127.0.0.1' && config.host !== 'localhost' && !config.cookieSecure) {
     console.warn(`[안내] DASH_HOST=${config.host}. 이 포트를 다른 컴퓨터에 공개한다면 TLS 리버스 프록시 뒤에 두고 COOKIE_SECURE=true를 설정하세요.`);
   }
   app.server.listen(config.port, config.host, () => {
-    console.log(`WARDOGS 대시보드: http://${config.host}:${config.port}`);
+    console.log(`WARDOGS 대시보드: http://${config.host}:${config.port}/rcon`);
     console.log(`RCON 대상: ${config.rconUrl}`);
     console.log(`이벤트 피드 수신: http://<이 서버 주소>:${config.port}/api/ingest/events`);
   });
+  if (config.adminAllowIps.length) console.log(`관리자 허용 IP: ${config.adminAllowIps.join(', ')}`);
   app.poller.start();
   const shutdown = () => {
     app.poller.stop();

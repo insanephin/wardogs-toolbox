@@ -5,13 +5,10 @@ import { useStore, getState, can, serves } from '../lib/store.ts';
 import { api, run, errorMessage } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
 import { Card, Empty } from '../components/common.tsx';
+import { Spinner } from '../components/spinner.tsx';
 
-// Mirrors <select> behaviour: fall back to the first option when the wanted one isn't listed.
 const pick = (list: CatalogItem[], want: string | undefined): string => (want && list.some((x) => x.id === want) ? want : list[0]?.id ?? '');
 
-// KOTH payout per score tick: a faster tick pays less each time, on 3-second bands.
-// 24–26s ×0.8 and 27–29s ×0.9 are confirmed from the official console; the other bands
-// continue the same 0.1-per-band step and are not confirmed.
 const ZONE_BASE = { control: 200, hot: 400 };
 const SCORE_BANDS: [number, number, number][] = [[18, 20, 0.6], [21, 23, 0.7], [24, 26, 0.8], [27, 29, 0.9], [30, 30, 1]];
 const bandOf = (s: number): [number, number, number] => SCORE_BANDS.find(([lo, hi]) => s >= lo && s <= hi) ?? [s, s, 1];
@@ -19,7 +16,6 @@ const bandOf = (s: number): [number, number, number] => SCORE_BANDS.find(([lo, h
 export default function Match() {
   const admin = can('admin');
   const [catalog, setCatalog] = useState<OrError<Catalog> | null>(null);
-  // Bumped after a rotation edit so the table reloads.
   const [rotationRev, setRotationRev] = useState(0);
   const bumpRotation = () => setRotationRev((n) => n + 1);
 
@@ -59,7 +55,6 @@ function ChangeMap({ catalog, admin, onRotationChange }: { catalog: Catalog; adm
   const [checked, setChecked] = useState<string[]>([]);
   const [alternator, setAlternator] = useState('');
   const [lighting, setLighting] = useState('');
-  // With rotation off the server reloads the current map, so a queued "next map" would never play.
   const [rotationOn, setRotationOn] = useState<boolean | null>(null);
   useEffect(() => {
     api<RotationData>('GET', '/api/rotation').then((r) => setRotationOn(!!r.enabled), () => setRotationOn(null));
@@ -88,7 +83,6 @@ function ChangeMap({ catalog, admin, onRotationChange }: { catalog: Catalog; adm
   };
   const toggle = (id: string, on: boolean) => setChecked((c) => (on ? [...c, id] : c.filter((x) => x !== id)));
 
-  // Keep catalog order, not click order.
   const selection = () => ({
     map,
     experiences: (details?.experiences || []).filter((id) => checked.includes(id)),
@@ -121,7 +115,7 @@ function ChangeMap({ catalog, admin, onRotationChange }: { catalog: Catalog; adm
               <input type="checkbox" value={id} checked={checked.includes(id)} onChange={(e) => toggle(id, e.target.checked)} />
               <span>{expLabel(id)}</span>
             </label>
-          )) : <span className="muted small">불러오는 중…</span>}
+          )) : <Empty><Spinner /></Empty>}
         </div>
       </div>
       <div className="grid-2 grid-tight">
@@ -183,7 +177,6 @@ function Controls({ admin }: { admin: boolean }) {
   return (
     <>
       <TickTimer admin={admin} />
-      {/* Match-ending actions sit together at the bottom, apart from the next-match setting. */}
       <div className="row-between divider">
         <div><strong>매치 재시작</strong><div className="muted small">현재 맵을 다시 불러옵니다. 로테이션 위치는 그대로이고 설정 파일은 다시 읽지 않습니다.</div></div>
         <button className="btn btn-danger-outline ctl-btn" type="button" disabled={!admin} onClick={restartMatch}>재시작</button>
@@ -219,7 +212,6 @@ function TickTimer({ admin }: { admin: boolean }) {
   const [lo, hi, mult] = bandOf(value);
   const scale = `${lo === hi ? `${lo}초` : `${lo}–${hi}초`} (×${mult})`;
   const dirty = value !== (saved.saved ?? saved.current);
-  // Saved in the document but the running match still uses the old tick.
   const staged = !dirty && saved.saved != null && saved.current != null && saved.saved !== saved.current;
 
   const apply = async () => {
@@ -255,7 +247,6 @@ function TickTimer({ admin }: { admin: boolean }) {
 }
 
 function Rotation({ rev, admin, onChange }: { rev: number; admin: boolean; onChange: () => void }) {
-  // Reload whenever the live map changes (the rotation advanced) or after an edit here.
   const currentMap = useStore((s) => s.live?.status?.map);
   const caps = useStore((s) => s.caps);
   const editable = admin && (caps?.features?.configDocument ?? true);

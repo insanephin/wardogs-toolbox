@@ -52,7 +52,6 @@ function KillFeed() {
     if (!older.length) setExhausted(true);
   };
 
-  // While searching, the list is a frozen server result; new live kills don't join it.
   let rows = searchResults ?? kills;
   if (filter.headshot) rows = rows.filter((k) => k.headshot);
   if (filter.teamkill) rows = rows.filter((k) => k.teamkill);

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { ComponentType, FormEvent, ReactNode } from 'react';
+import type { ComponentType } from 'react';
 import { useStore, setState, getState, can, colorsFrom, withEngagements } from './lib/store.ts';
 import { api, errorMessage } from './lib/api.ts';
-import type { Action, Capabilities, Engagement, FeedEvent, FeedStatus, Kill, Live, Me, Role } from './lib/types.ts';
+import type { Action, Capabilities, Engagement, FeedEvent, FeedStatus, Kill, Live, Me, Report, Role } from './lib/types.ts';
 import { toast, useToasts } from './lib/toast.ts';
 import { ModalHost } from './lib/modal.tsx';
 import { fmtAgo } from './lib/format.ts';
@@ -16,12 +16,12 @@ import Match from './views/Match.tsx';
 import Config from './views/Config.tsx';
 import Audit from './views/Audit.tsx';
 import Server from './views/Server.tsx';
+import Reports from './views/Reports.tsx';
+import { Spinner } from './components/spinner.tsx';
 
 const ROLE_LABEL: Record<Role, string> = { viewer: '뷰어', mod: '모더레이터', admin: '관리자' };
 const KILL_BUFFER = 300;
 
-// Menus that cover the same ground are one entry with tabs. Each tab keeps its own hash
-// (#links, #audit, ...), so old bookmarks still land on the right page.
 interface Page {
   id: string;
   label: string;
@@ -39,6 +39,7 @@ const VIEWS: Page[] = [
     { id: 'links', label: '계정 연동·화이트리스트', View: Links, role: 'viewer' },
     { id: 'moderation', label: '밴·예약 슬롯', View: Moderation, role: 'viewer' },
   ] },
+  { id: 'reports', label: '신고', View: Reports, role: 'viewer' },
   { id: 'system', label: '설정', role: 'viewer', tabs: [
     { id: 'server', label: '연결 정보', View: Server, role: 'viewer' },
     { id: 'config', label: '서버 설정', View: Config, role: 'admin' },
@@ -46,7 +47,6 @@ const VIEWS: Page[] = [
   ] },
 ];
 
-// Resolves the hash to a menu entry and, for tabbed entries, the tab (first allowed one by default).
 function resolve(hash: string, me: Me) {
   const allowed = VIEWS.filter((v) => can(v.role, me)).map((v) => (v.tabs ? { ...v, tabs: v.tabs.filter((t) => can(t.role, me)) } : v));
   const entry = allowed.find((v) => v.id === hash || v.tabs?.some((t) => t.id === hash)) || allowed[0]!;
@@ -67,7 +67,7 @@ export default function App() {
 
   return (
     <>
-      {!checked ? <div className="boot">불러오는 중…</div> : me ? <Shell key={me.name} me={me} /> : <Login />}
+      {!checked ? <div className="boot"><Spinner /></div> : me ? <Shell key={me.name} me={me} /> : <Login />}
       <ModalHost />
       <Toasts />
     </>
@@ -85,31 +85,32 @@ function Toasts() {
   );
 }
 
+const LOGIN_ERRORS: Record<string, string> = {
+  denied: '이 치지직 계정은 관리자 패널 권한이 없습니다',
+  cancelled: '치지직 로그인을 취소했습니다',
+  expired: '로그인 시간이 지났습니다. 다시 시도해주세요',
+  failed: '치지직 로그인에 실패했습니다. 잠시 후 다시 시도해주세요',
+  unconfigured: '서버에 치지직 앱 설정이 없습니다',
+};
+
 function Login() {
-  const [error, setError] = useState('');
-  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    try {
-      setState({ me: await api<Me>('POST', '/api/login', { name: fd.get('name'), password: fd.get('password') }) });
-    } catch (ex) {
-      setError(errorMessage(ex));
-    }
-  };
+  const [error] = useState(() => {
+    const code = new URLSearchParams(location.search).get('login');
+    return code ? LOGIN_ERRORS[code] ?? LOGIN_ERRORS.failed! : '';
+  });
+  useEffect(() => {
+    if (location.search) history.replaceState(null, '', '/rcon');
+  }, []);
   return (
     <div className="login-wrap">
-      <form className="login-card" onSubmit={onSubmit}>
-        <div className="brand brand-lg"><span>WARDOGS 서버 관리</span></div>
-        <label className="field"><span className="field-label">이름</span><input name="name" autoComplete="username" required autoFocus /></label>
-        <label className="field"><span className="field-label">비밀번호</span><input name="password" type="password" autoComplete="current-password" required /></label>
-        <p className="login-error" role="alert">{error}</p>
-        <button className="btn btn-primary btn-block" type="submit">로그인</button>
-      </form>
+      <div className="login-card">
+        {error ? <p className="login-error" role="alert">{error}</p> : null}
+        <a className="btn btn-primary btn-block" href="/rcon/login">로그인</a>
+      </div>
     </div>
   );
 }
 
-// Preloads history, then keeps the store in sync with /api/stream while mounted.
 function useLiveStream() {
   useEffect(() => {
     let source: EventSource | null = null;
@@ -136,6 +137,10 @@ function useLiveStream() {
       on<FeedEvent>('matchEvent', (ev) => setState((s) => ({ matchEvents: [ev, ...s.matchEvents].slice(0, 200) })));
       on<FeedStatus>('feed', (feed) => setState((s) => (s.live ? { live: { ...s.live, feed } } : {})));
       on<Action>('action', (a) => setState({ lastAction: a }));
+      on<Report>('report', (r) => {
+        setState({ lastReport: r });
+        toast(`새 신고: ${r.targetName}`, 'warn');
+      });
       source.onerror = () => setState({ streamDown: true });
       source.onopen = () => setState({ streamDown: false });
     })();
@@ -143,7 +148,7 @@ function useLiveStream() {
     return () => {
       cancelled = true;
       source?.close();
-      setState({ live: null, caps: null, kills: [], engagements: new Map(), matchEvents: [], lastAction: null, streamDown: false });
+      setState({ live: null, caps: null, kills: [], engagements: new Map(), matchEvents: [], lastAction: null, lastReport: null, streamDown: false });
     };
   }, []);
 }
@@ -159,7 +164,7 @@ function Shell({ me }: { me: Me }) {
   const page = tab || entry;
 
   useEffect(() => {
-    document.title = `${page.label} · WARDOGS 관리`;
+    document.title = page.label;
     mainRef.current?.focus({ preventScroll: true });
   }, [page.id, page.label]);
 
@@ -170,59 +175,63 @@ function Shell({ me }: { me: Me }) {
 
   return (
     <div className="shell">
-      <aside className="sidebar">
-        <div className="brand"><span>RCON 패널</span></div>
-        <nav className="nav" aria-label="메뉴">
-          {allowed.map((v) => (
-            <a key={v.id} href={`#${v.id}`} className={v.id === entry.id ? 'active' : undefined}>
-              {v.label}
-            </a>
-          ))}
-        </nav>
-      </aside>
-      <div className="content">
-        <Topbar>
+      <header className="topbar">
+        <div className="topbar-left">
+          <nav className="nav" aria-label="메뉴">
+            {allowed.map((v) => (
+              <a key={v.id} href={`#${v.id}`} className={v.id === entry.id ? 'active' : undefined} aria-current={v.id === entry.id ? 'page' : undefined}>
+                {v.label}
+              </a>
+            ))}
+          </nav>
+        </div>
+        <ServerName />
+        <div className="topbar-right">
+          <Conn />
           <div className="me">
-            <strong>{me.name}</strong><span className={`tag role-${me.role}`}>{ROLE_LABEL[me.role]}</span>
+            <span>{me.name}</span><span className="muted small">{ROLE_LABEL[me.role]}</span>
             <button className="btn btn-ghost btn-sm" onClick={logout}>로그아웃</button>
           </div>
-        </Topbar>
-        <main id="main" tabIndex={-1} ref={mainRef}>
-          {entry.tabs && entry.tabs.length > 1 ? (
-            <nav className="subtabs" aria-label={`${entry.label} 하위 메뉴`}>
-              {entry.tabs.map((t) => (
-                <a key={t.id} href={`#${t.id}`} className={t.id === tab?.id ? 'on' : undefined} aria-current={t.id === tab?.id ? 'page' : undefined}>{t.label}</a>
-              ))}
-            </nav>
-          ) : null}
-          {page.View ? <page.View key={page.id} /> : null}
-        </main>
-      </div>
+        </div>
+      </header>
+      <main id="main" tabIndex={-1} ref={mainRef}>
+        {entry.tabs && entry.tabs.length > 1 ? (
+          <nav className="subtabs" aria-label={`${entry.label} 하위 메뉴`}>
+            {entry.tabs.map((t) => (
+              <a key={t.id} href={`#${t.id}`} className={t.id === tab?.id ? 'on' : undefined} aria-current={t.id === tab?.id ? 'page' : undefined}>{t.label}</a>
+            ))}
+          </nav>
+        ) : null}
+        {page.View ? <page.View key={page.id} /> : null}
+      </main>
     </div>
   );
 }
 
-function Topbar({ children }: { children: ReactNode }) {
+function ServerName() {
+  const name = useStore((s) => s.live?.status?.serverName);
+  return <span className="server-name">{name || '서버 연결 대기'}</span>;
+}
+
+function Conn() {
   const live = useStore((s) => s.live);
   const streamDown = useStore((s) => s.streamDown);
   useNow();
   let cls = 'conn';
-  let text = '연결 중';
+  let state = '연결 중';
   let title: string | undefined;
   if (live) {
-    cls = `conn ${live.online && !streamDown ? 'conn-up' : 'conn-down'}`;
+    const up = live.online && !streamDown;
+    cls = `conn ${up ? 'conn-up' : 'conn-down'}`;
     title = live.online ? `RCON 연결됨 · ${live.intervalMs / 1000}초 주기` : `RCON 끊김: ${live.lastError?.message ?? ''}`;
-    text = live.online ? `연결됨 · ${Math.round(live.intervalMs / 1000)}초 주기` : `끊김 · ${fmtAgo(live.lastPollAt)}`;
+    state = live.online ? '연결됨' : `끊김 · ${fmtAgo(live.lastPollAt)}`;
   } else if (streamDown) {
     cls = 'conn conn-down';
   }
   return (
-    <header className="topbar">
-      <div className="topbar-title">
-        <h1>{live?.status?.serverName || '서버 연결 대기'}</h1>
-        <div className={cls} title={title}><span className="dot" aria-hidden="true" /><span className="conn-text">{text}</span></div>
-      </div>
-      {children}
-    </header>
+    <div className={cls} title={title}>
+      <span className="dot" aria-hidden="true" />
+      <span className={cls.includes('conn-down') ? 'conn-text' : undefined}>{state}</span>
+    </div>
   );
 }

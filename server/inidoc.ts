@@ -1,7 +1,3 @@
-// Edits to the ServerSettings.ini text returned by GET /v1/config.
-// The 2026-09-14 build removed the reserved-slot and rotation write routes; both lists now live in the
-// document and are changed by a whole-document PUT. Entry formats follow the official console.
-
 const SESSION_SECTION = '/Script/WDGame.WDGameSession';
 const ROTATION_SECTION = '/Script/WDGame.WDServerMapRotationSettings';
 const RESERVED_KEY = 'DefaultReservedPlayerIds';
@@ -39,7 +35,6 @@ function sectionRanges(lines: string[]): SectionRange[] {
   return ranges;
 }
 
-// `!Key=ClearArray` resets the array and `-Key=v` removes one value; neither is a value itself.
 const isValue = (kv: KeyLine | null, key: string): kv is KeyLine => !!kv && kv.key === key && kv.op !== '!' && kv.op !== '-';
 
 function getArray(text: string, section: string, key: string): string[] {
@@ -54,8 +49,6 @@ function getArray(text: string, section: string, key: string): string[] {
   return values;
 }
 
-// Replaces every value line of the array, writing the new ones where the first old one was
-// (or at the end of the section). `op` is used only when no existing line shows which prefix to keep.
 function setArray(text: string, section: string, key: string, values: string[], { op = '+', clear = false } = {}): string {
   if (sameList(getArray(text, section, key), values)) return text;
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
@@ -86,7 +79,6 @@ function setArray(text: string, section: string, key: string, values: string[], 
     kept.push(lines[i]);
   }
   if (at < 0) {
-    // Nothing was removed, so section indexes still hold. Insert after the last non-blank line.
     at = sec.end;
     while (at > sec.start + 1 && kept[at - 1].trim() === '') at--;
   }
@@ -96,7 +88,6 @@ function setArray(text: string, section: string, key: string, values: string[], 
   return kept.join(eol);
 }
 
-// Single-value keys. The last plain `Key=` line wins, as in Unreal's own reader.
 export function getValue(text: string, section: string, key: string): string | null {
   const lines = text.split(/\r?\n/);
   const sec = sectionRanges(lines).find((r) => r.name === section);
@@ -109,7 +100,6 @@ export function getValue(text: string, section: string, key: string): string | n
   return value;
 }
 
-// Rewrites the existing line in place (keeping its spot), or appends one to the section.
 export function setValue(text: string, section: string, key: string, value: string | number): string {
   if (getValue(text, section, key) === String(value)) return text;
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
@@ -148,7 +138,7 @@ export function setReservedInDoc(text: string, steamId: string, present: boolean
   return setArray(text, SESSION_SECTION, RESERVED_KEY, present ? [...ids, steamId] : ids.filter((id) => id !== steamId));
 }
 
-export interface RotationEntry {
+interface RotationEntry {
   map: string;
   experiences: string[];
   lighting: string;
@@ -162,8 +152,6 @@ export interface RotationSelection {
   alternator?: string;
 }
 
-// Entries look like (Map="Kavkazi",Experiences="A+B",Lighting="DayClear",ZoneAlternator="Tag").
-// A single mode is written as Experience="A"; several are joined with "+".
 export function parseRotationEntry(raw: string): RotationEntry {
   const entry: RotationEntry = { map: '', experiences: [], lighting: '', alternator: 'None' };
   const inner = String(raw).trim().replace(/^\(|\)$/g, '');
@@ -202,8 +190,6 @@ export function rotationEntriesInDoc(text: string): string[] {
   return getArray(text, ROTATION_SECTION, ROTATION_KEY);
 }
 
-// Rotation lines carry duplicates on purpose, so they use "." (append) and start from ClearArray
-// to replace whatever the base config holds.
 export function setRotationInDoc(text: string, entries: string[]): string {
   return setArray(text, ROTATION_SECTION, ROTATION_KEY, entries, { op: '.', clear: true });
 }

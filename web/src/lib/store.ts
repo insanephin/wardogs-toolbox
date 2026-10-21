@@ -1,22 +1,19 @@
-// Shared app state fed by the live stream. Components read slices with useStore(selector);
-// every write replaces the state object so selectors see new references.
 import { useSyncExternalStore } from 'react';
-import type { Action, Capabilities, Engagement, FeedEvent, Kill, Live, Me, Role } from './types.ts';
+import type { Action, Capabilities, Engagement, FeedEvent, Kill, Live, Me, Report, Role } from './types.ts';
 
 const ROLE_RANK: Record<Role, number> = { viewer: 1, mod: 2, admin: 3 };
 
-export interface State {
+interface State {
   me: Me | null;
   live: Live | null;
   caps: Capabilities | null;
-  // Faction name -> color. Kept referentially stable across polls so kill rows don't re-render.
   colors: Record<string, string | undefined>;
   streamDown: boolean;
   kills: Kill[];
   engagements: Map<number, Engagement>;
   matchEvents: FeedEvent[];
-  // Newest dashboard action from the stream; useOnAction watches it.
   lastAction: Action | null;
+  lastReport: Report | null;
 }
 
 let state: State = {
@@ -29,6 +26,7 @@ let state: State = {
   engagements: new Map(),
   matchEvents: [],
   lastAction: null,
+  lastReport: null,
 };
 const listeners = new Set<() => void>();
 
@@ -52,7 +50,6 @@ export function can(role: Role, me = state.me): boolean {
   return !!me && ROLE_RANK[me.role] >= ROLE_RANK[role];
 }
 
-// Route templates differ between builds ({id} vs {steamId}).
 export function serves(caps: Capabilities | null, route: string): boolean {
   if (!caps) return true;
   const norm = (r: string) => r.replace(/\{[^}]+\}/g, '{}');
@@ -61,7 +58,6 @@ export function serves(caps: Capabilities | null, route: string): boolean {
 
 const ENGAGEMENT_BUFFER = 200;
 
-// Returns a new map with `list` merged in, dropping the oldest entries past the buffer.
 export function withEngagements(map: Map<number, Engagement>, list: Engagement[]): Map<number, Engagement> {
   const next = new Map(map);
   for (const g of list) next.set(g.id, g);

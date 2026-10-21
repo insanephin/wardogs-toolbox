@@ -1,5 +1,3 @@
-// Formatting helpers and display labels. React escapes text, so game strings (names, reasons)
-// can be rendered directly; never pass them to dangerouslySetInnerHTML.
 import type { FeedEvent } from './types.ts';
 
 export const ACTION_LABELS: Record<string, string> = {
@@ -8,7 +6,7 @@ export const ACTION_LABELS: Record<string, string> = {
   pending_ban_enforced: '대기 밴 집행', reserved_add: '예약 슬롯 추가', reserved_remove: '예약 슬롯 삭제',
   change_map: '맵 변경', score_period: '점수 주기 변경', end_match: '매치 종료', restart_match: '매치 재시작', set_lighting: '조명 변경',
   config_apply: '설정 적용', whitelist_update: '화이트리스트 변경', whitelist_kick: '미연동 킥',
-  whitelist_ban: '미연동 밴', whitelist_unban: '미연동 밴 해제',
+  whitelist_ban: '미연동 밴', whitelist_unban: '미연동 밴 해제', report_update: '신고 처리', unlink: '연동 해제',
 };
 
 export const TAG_LABELS: Record<string, string> = {
@@ -75,10 +73,8 @@ export function pct(part: number, whole: number): number | null {
   return whole ? Math.round((part / whole) * 100) : null;
 }
 
-// Counts code points, which is how the game measures its 256/200 limits.
 export const charCount = (s: string): number => [...s].length;
 
-// One-line text for a feed event. Kills from the audit list carry type 'killed'.
 export function describeEvent(e: FeedEvent): string {
   switch (e.type) {
     case 'killed': return e.suicide
@@ -91,6 +87,6 @@ export function describeEvent(e: FeedEvent): string {
       const scores = (e.factionScores || []).map((f) => `${f.faction} ${f.score}`).join(' / ');
       return `매치 결과: ${e.winningFaction || '무승부'} 승리 · ${scores}`;
     }
-    default: return `${e.type}`;
+    default: return e.type;
   }
 }

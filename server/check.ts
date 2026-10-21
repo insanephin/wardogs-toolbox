@@ -1,11 +1,7 @@
-// Connection test for a real server: reads the same settings as the dashboard and reports
-// whether RCON is reachable, the password is accepted, and what this build serves.
-// Usage: npm run check   (in Docker: docker compose run --rm dashboard npm run check)
-
 import { loadConfig } from './config.ts';
 import { RconClient } from './rcon.ts';
 import type { RconError } from './rcon.ts';
-import { parseUsers } from './auth.ts';
+import { parseAdmins } from './auth.ts';
 
 const config = loadConfig();
 let failed = false;
@@ -18,9 +14,12 @@ const warn = (msg: string) => console.log(`  [주의] ${msg}`);
 
 console.log('\n설정');
 try {
-  const users = parseUsers(config.users);
-  if (!users.size) bad('DASH_USERS가 비어 있습니다', '.env에 이름:역할:비밀번호 형식으로 계정을 넣으세요');
-  else ok(`대시보드 계정 ${users.size}개 (${[...users.values()].map((u) => `${u.name}/${u.role}`).join(', ')})`);
+  const admins = parseAdmins(config.admins);
+  if (!admins.size) bad('ADMIN_CHZZK_IDS가 비어 있습니다', '.env에 관리자 패널에 들어올 치지직 채널 ID를 쉼표로 넣으세요');
+  else ok(`관리자 치지직 채널 ${admins.size}개 (${[...admins].map(([id, role]) => `${id.slice(0, 8)}…/${role}`).join(', ')})`);
+  if (!config.chzzk.clientId || !config.chzzk.clientSecret || !config.chzzk.redirectUrl) {
+    bad('치지직 앱 설정이 비어 있어 관리자 로그인을 할 수 없습니다', 'CHZZK_CLIENT_ID, CHZZK_CLIENT_SECRET, CHZZK_REDIRECT_URL을 넣으세요');
+  }
 } catch (err) {
   bad((err as Error).message);
 }
