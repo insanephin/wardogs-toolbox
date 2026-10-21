@@ -258,13 +258,13 @@ export class Poller {
 
     for (const ban of this.store.whitelistBans()) {
       if (!budget) return;
-      if (mode === 'ban' && !ban.linked) continue;
+      // Only linking lifts a whitelist ban; switching the mode off leaves existing bans in place.
+      if (!ban.linked) continue;
       budget--;
-      const why = ban.linked ? 'linked' : 'whitelist_off';
       try {
         await this.rcon.unban(ban.steamId);
         this.store.removeWhitelistBan(ban.steamId);
-        this.emit('action', this.store.logAction('system', 'whitelist_unban', ban.steamId, { name: ban.name, why }, true));
+        this.emit('action', this.store.logAction('system', 'whitelist_unban', ban.steamId, { name: ban.name, why: 'linked' }, true));
       } catch (err) {
         const stillBanned = await this.rcon.bans().then((l) => l.some((b) => b.steamId === ban.steamId), () => true);
         if (stillBanned) this.store.noteWhitelistBanError(ban.steamId, errorMessage(err));

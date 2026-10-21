@@ -11,8 +11,8 @@ import { Spinner } from '../components/spinner.tsx';
 const WHITELIST_LABELS: Record<WhitelistMode, string> = { off: '꺼짐', kick: '미연동 킥', ban: '미연동 밴' };
 const MODE_HELP: Record<WhitelistMode, string> = {
   off: '누구나 접속할 수 있습니다.',
-  kick: '스팀을 연동하지 않은 플레이어를 입장하자마자 킥합니다. 연동 후 바로 다시 들어올 수 있습니다.',
-  ban: '스팀을 연동하지 않은 플레이어를 밴하고 킥합니다. 연동하면 대시보드가 자동으로 밴을 풉니다. 이 모드를 끄면 미등록 유저 밴도 모두 풀립니다.',
+  kick: '스팀과 치지직을 모두 연동하지 않은 플레이어를 입장하자마자 킥합니다. 연동 후 바로 다시 들어올 수 있습니다.',
+  ban: '스팀과 치지직을 모두 연동하지 않은 플레이어를 밴합니다. 안내 후 연동할 경우 자동으로 밴이 풀립니다.',
 };
 
 export default function Links() {
