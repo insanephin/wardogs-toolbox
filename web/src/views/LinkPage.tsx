@@ -11,6 +11,7 @@ interface LinkState {
   chzzk: string | null;
   steam: string | null;
   link: Link | null;
+  joinUrl: string | null;
 }
 
 const STEPS: { id: Provider; label: string }[] = [
@@ -78,7 +79,12 @@ export default function LinkPage() {
             })}
           </ol>
           {link ? (
-            <p className="public-lead small">{`${fmtTime(link.linkedAt)}에 등록되었습니다.`}</p>
+            <>
+              <p className="public-lead small">{`${fmtTime(link.linkedAt)}에 등록되었습니다.`}</p>
+              {st.joinUrl ? (
+                <a className="btn btn-block btn-primary" href={st.joinUrl} target="_blank" rel="noopener noreferrer">서버 접속</a>
+              ) : <p className="public-lead small">지금은 서버에 접속할 수 없습니다.</p>}
+            </>
           ) : st.chzzk || st.steam ? (
             <p className="public-lead small">{`${st.chzzk ? '스팀' : '치지직'}에도 로그인하면 연동이 완료됩니다.`}</p>
           ) : null}

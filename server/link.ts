@@ -15,6 +15,7 @@ const STEAM_OPENID = 'https://steamcommunity.com/openid/login';
 const STEAM_NS = 'http://specs.openid.net/auth/2.0';
 const STEAM_SELECT = 'http://specs.openid.net/auth/2.0/identifier_select';
 const STEAM_CLAIMED_ID = /^https:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/;
+const JOIN_URL = 'https://wardogserverlist.com/join';
 
 export type Provider = 'chzzk' | 'steam';
 type Result = 'linked' | 'proven' | 'taken' | 'cancelled' | 'expired' | 'failed' | 'unconfigured';
@@ -67,7 +68,7 @@ function makeRoom<K, V>(map: Map<K, V>): void {
 
 const sqlNow = () => new Date().toISOString().slice(0, 23).replace('T', ' ');
 
-export function createLinking(config: Config, store: Store, admin: AdminLogin) {
+export function createLinking(config: Config, store: Store, admin: AdminLogin, serverId: () => string | null) {
   const sessions = new Map<string, Session>();
   const pending = new Map<string, Pending>();
   const configured = {
@@ -280,9 +281,16 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin) {
   const linkOf = (s: Session): Link | null =>
     (s.steam && store.linkByAccount('steam', s.steam.id)) || (s.chzzk && store.linkByAccount('chzzk', s.chzzk.id)) || null;
 
-  const view = (s: Session | null) => (s
-    ? { chzzk: s.chzzk?.name ?? null, steam: s.steam?.name ?? null, link: linkOf(s) }
-    : { chzzk: null, steam: null, link: null });
+  const joinUrl = (link: Link | null) => {
+    const id = link && serverId();
+    return id ? `${JOIN_URL}?${new URLSearchParams({ key: `id|${id}` })}` : null;
+  };
+
+  const view = (s: Session | null) => {
+    if (!s) return { chzzk: null, steam: null, link: null, joinUrl: null };
+    const link = linkOf(s);
+    return { chzzk: s.chzzk?.name ?? null, steam: s.steam?.name ?? null, link, joinUrl: joinUrl(link) };
+  };
 
   function register(router: Router) {
     router.add('GET', '/api/link/me', { public: true }, ({ req }) => ({ configured, ...view(session(req)) }));

@@ -84,7 +84,7 @@ function createApp(config: Config) {
       endPanelSession(previous);
       return cookie('', 0);
     },
-  });
+  }, () => poller.serverId);
   linking.register(router);
   registerReports(router, { store, poller, hub, configured: linking.configured, accounts: linking.accounts });
 
