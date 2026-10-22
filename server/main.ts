@@ -182,7 +182,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.warn(`[안내] DASH_HOST=${config.host}. 이 포트를 다른 컴퓨터에 공개한다면 TLS 리버스 프록시 뒤에 두고 COOKIE_SECURE=true를 설정하세요.`);
   }
   app.server.listen(config.port, config.host, () => {
-    console.log(`WARDOGS 대시보드: http://${config.host}:${config.port}/rcon`);
+    console.log(`워독스 도구집: http://${config.host}:${config.port}/rcon`);
     console.log(`RCON 대상: ${config.rconUrl}`);
     console.log(`이벤트 피드 수신: http://<이 서버 주소>:${config.port}/api/ingest/events`);
   });
