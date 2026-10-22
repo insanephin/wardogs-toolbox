@@ -258,7 +258,6 @@ export class Poller {
 
     for (const ban of this.store.whitelistBans()) {
       if (!budget) return;
-      // Only linking lifts a whitelist ban; switching the mode off leaves existing bans in place.
       if (!ban.linked) continue;
       budget--;
       try {

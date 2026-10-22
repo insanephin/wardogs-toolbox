@@ -4,6 +4,8 @@ import { api, errorMessage } from '../lib/api.ts';
 import { fmtTime, ACTION_LABELS, describeEvent } from '../lib/format.ts';
 import { Card, Empty, useOnAction } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
+import { IconButton } from '../components/iconButton.tsx';
+import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
 
 const TABS = [['dashboard', '대시보드 작업'], ['rcon', 'RCON 접속 로그'], ['feedRequests', '피드 수신 기록'], ['feedEvents', '피드 이벤트']];
 
@@ -26,7 +28,7 @@ export default function Audit() {
   useOnAction(load);
 
   return (
-    <Card title="감사 로그" extra={<button className="btn btn-sm" type="button" onClick={load}>새로고침</button>}>
+    <Card title="감사 로그" extra={<IconButton icon={faRotateRight} label="새로고침" onClick={load} />}>
       <div className="toolbar">
         <div className="seg" role="tablist">
           {TABS.map(([id, label]) => (

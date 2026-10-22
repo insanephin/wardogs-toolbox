@@ -31,20 +31,17 @@ function resultText(r: string, p: string): { ok: boolean; text: string } | null 
   }
 }
 
-export default function LinkPage({ active }: { active: boolean }) {
+export default function LinkPage() {
   const [st, setSt] = useState<LinkState | null>(null);
   const [error, setError] = useState('');
   const [notice] = useState(() => {
     const q = new URLSearchParams(location.search);
-    return q.get('r') ? resultText(q.get('r')!, q.get('p') ?? '') : null;
+    return q.get('r') && location.pathname === '/' ? resultText(q.get('r')!, q.get('p') ?? '') : null;
   });
 
   useEffect(() => {
-    if (location.search) history.replaceState(null, '', location.pathname);
+    call<LinkState>('GET', '/api/link/me').then(setSt, (e) => setError(e.message));
   }, []);
-  useEffect(() => {
-    if (active) call<LinkState>('GET', '/api/link/me').then(setSt, (e) => setError(e.message));
-  }, [active]);
 
   const link = st?.link;
   const shown = (p: Provider) => st?.[p] ?? (p === 'chzzk' ? link?.chzzkName : link?.steamName) ?? null;
@@ -59,7 +56,7 @@ export default function LinkPage({ active }: { active: boolean }) {
         <ul>
           <li>스팀은 <b>워독스를 보유한 계정</b>으로 로그인하세요.</li>
           <li>한 번 등록하면 <b>직접 해제하거나 다른 계정으로 바꿀 수 없습니다.</b></li>
-          <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href="/report" onClick={followLink}>신고</a>에 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
+          <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href="/report" onClick={followLink}>신고하기</a>로 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
         </ul>
       </div>
 

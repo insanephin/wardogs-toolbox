@@ -18,6 +18,8 @@ import Audit from './views/Audit.tsx';
 import Server from './views/Server.tsx';
 import Reports from './views/Reports.tsx';
 import { Spinner } from './components/spinner.tsx';
+import { IconButton } from './components/iconButton.tsx';
+import { faRightFromBracket } from '@fortawesome/free-solid-svg-icons';
 
 const ROLE_LABEL: Record<Role, string> = { viewer: '뷰어', mod: '모더레이터', admin: '관리자' };
 const KILL_BUFFER = 300;
@@ -164,9 +166,8 @@ function Shell({ me }: { me: Me }) {
   const page = tab || entry;
 
   useEffect(() => {
-    document.title = page.label;
     mainRef.current?.focus({ preventScroll: true });
-  }, [page.id, page.label]);
+  }, [page.id]);
 
   const logout = async () => {
     await api('POST', '/api/logout', {}).catch(() => {});
@@ -190,7 +191,7 @@ function Shell({ me }: { me: Me }) {
           <Conn />
           <div className="me">
             <span>{me.name}</span><span className="muted small">{ROLE_LABEL[me.role]}</span>
-            <button className="btn btn-ghost btn-sm" onClick={logout}>로그아웃</button>
+            <IconButton icon={faRightFromBracket} label="로그아웃" className="btn-ghost" onClick={logout} />
           </div>
         </div>
       </header>

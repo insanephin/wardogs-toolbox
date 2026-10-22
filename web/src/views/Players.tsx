@@ -226,7 +226,7 @@ async function moveFaction(p: Player) {
 async function ban(p: Player) {
   const v = await modal({
     title: `${p.name ?? p.steamId} 밴`, danger: true, confirm: '밴',
-    body: <p className="muted small">밴 후 즉시 킥합니다. 해제는 모더레이션 탭에서 할 수 있습니다.</p>,
+    body: <p className="muted small">밴 후 즉시 킥합니다. 해제는 접속 관리 › 밴·예약 슬롯 탭에서 할 수 있습니다.</p>,
     fields: [{ name: 'reason', label: '사유', max: 200 }],
   });
   if (v) await run('밴', 'POST', '/api/bans', { steamId: p.steamId, reason: v.reason });

@@ -4,6 +4,8 @@ import { fmtAgo, fmtNum } from '../lib/format.ts';
 import { Card, Empty, useNow } from '../components/common.tsx';
 import type { ReactNode } from 'react';
 import type { Capabilities, Live } from '../lib/types.ts';
+import { IconButton } from '../components/iconButton.tsx';
+import { faCopy } from '@fortawesome/free-solid-svg-icons';
 
 type KvRow = [label: string, value: ReactNode, cls?: string];
 
@@ -61,7 +63,7 @@ export default function Server() {
         </Card>
       </div>
       {can('admin') ? (
-        <Card title="피드 연결" extra={<button className="btn btn-sm" type="button" onClick={() => navigator.clipboard?.writeText(snippet).then(() => toast('복사했습니다'))}>복사</button>}>
+        <Card title="피드 연결" extra={<IconButton icon={faCopy} label="복사" onClick={() => navigator.clipboard?.writeText(snippet).then(() => toast('복사했습니다'))} />}>
           <div className="card-body stack">
             <p className="muted small">ServerSettings.ini에 넣고 재시작. Url은 게임 서버에서 닿는 주소로.</p>
             <pre className="code">{snippet}</pre>

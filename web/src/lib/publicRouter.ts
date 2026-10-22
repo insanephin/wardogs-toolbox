@@ -19,6 +19,12 @@ export function followLink(e: MouseEvent<HTMLAnchorElement>) {
   e.preventDefault();
   const to = e.currentTarget.pathname;
   if (to === currentPath()) return;
-  history.pushState(null, '', to);
+  history.pushState({ pushed: true }, '', to);
+  notify();
+}
+
+export function leave(to: string) {
+  if (history.state?.pushed) return history.back();
+  history.replaceState(null, '', to);
   notify();
 }

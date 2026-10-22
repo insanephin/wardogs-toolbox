@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import type { Role, Session } from './auth.ts';
 
 export class HttpError extends Error {
@@ -133,6 +133,7 @@ const TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
   '.json': 'application/json; charset=utf-8',
 };
 
@@ -153,7 +154,7 @@ export async function serveStatic(root: string, urlPath: string, res: ServerResp
   }
   const rel = normalize(decoded).replace(/^([/\\])+/, '');
   let file = resolve(join(base, rel || 'index.html'));
-  if (!file.startsWith(base)) return false;
+  if (!file.startsWith(base + sep)) return false;
   try {
     if ((await stat(file)).isDirectory()) file = join(file, 'index.html');
     const data = await readFile(file);

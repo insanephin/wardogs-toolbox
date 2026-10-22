@@ -61,6 +61,13 @@ export function fmtTime(ms: number | null | undefined): string {
   return d.toDateString() === new Date().toDateString() ? t : `${d.getMonth() + 1}/${d.getDate()} ${t}`;
 }
 
+export function fmtDateTime(ms: number | null | undefined): string {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getFullYear() % 100)}.${p(d.getMonth() + 1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 export function fmtNum(n: number | null | undefined): string {
   return n == null ? '—' : Number(n).toLocaleString('ko-KR');
 }
@@ -85,7 +92,7 @@ export function describeEvent(e: FeedEvent): string {
     case 'match_state': return `매치 상태: ${(e.state && STATE_LABELS[e.state]) ?? e.state}${e.mapName ? ` · ${e.mapName}` : ''}`;
     case 'match_ended': {
       const scores = (e.factionScores || []).map((f) => `${f.faction} ${f.score}`).join(' / ');
-      return `매치 결과: ${e.winningFaction || '무승부'} 승리 · ${scores}`;
+      return `매치 결과: ${e.winningFaction ? `${e.winningFaction} 승리` : '무승부'} · ${scores}`;
     }
     default: return e.type;
   }

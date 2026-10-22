@@ -34,7 +34,7 @@ function notFound(url: URL, res: ServerResponse) {
   res.end();
 }
 
-export function createApp(config: Config) {
+function createApp(config: Config) {
   const auth = new Auth(config.admins);
   const store = new Store(config.dbPath);
   const hub = new SseHub();
@@ -114,7 +114,8 @@ export function createApp(config: Config) {
     const session = auth.session(sessionId);
     if (!route.opts.public) {
       if (!session) throw new HttpError(401, 'unauthenticated', '로그인이 필요합니다');
-      if (!hasRole(session, route.opts.role ?? 'admin')) throw new HttpError(403, 'forbidden', `이 작업은 ${route.opts.role} 이상 권한이 필요합니다`);
+      const role = route.opts.role ?? 'admin';
+      if (!hasRole(session, role)) throw new HttpError(403, 'forbidden', `이 작업은 ${role} 이상 권한이 필요합니다`);
     }
     if (req.method !== 'GET' && !route.opts.rawBody && req.headers[CSRF_HEADER] !== 'wardogs-dashboard') {
       throw new HttpError(403, 'csrf', '요청 헤더가 없습니다');

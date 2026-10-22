@@ -3,6 +3,8 @@ import type { FormEvent } from 'react';
 import { fmtTime, charCount } from '../lib/format.ts';
 import { call } from '../lib/publicApi.ts';
 import { Spinner } from '../components/spinner.tsx';
+import { Icon } from '../components/iconButton.tsx';
+import { faChevronDown, faChevronUp } from '@fortawesome/free-solid-svg-icons';
 
 interface MyReport {
   id: number;
@@ -33,20 +35,17 @@ function signInError(r: string | null): string {
   return '계정을 확인하지 못했습니다. 다시 시도해주세요.';
 }
 
-export default function ReportPage({ active }: { active: boolean }) {
+export default function ReportPage() {
   const [st, setSt] = useState<ReportState | null>(null);
   const [error, setError] = useState(() => signInError(new URLSearchParams(location.search).get('r')));
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [description, setDescription] = useState('');
+  const [showMine, setShowMine] = useState(false);
 
-  const load = () => call<ReportState>('GET', '/api/report/me').then(setSt, (e) => setError(e.message));
   useEffect(() => {
-    if (location.search) history.replaceState(null, '', location.pathname);
+    call<ReportState>('GET', '/api/report/me').then(setSt, (e) => setError(e.message));
   }, []);
-  useEffect(() => {
-    if (active) load();
-  }, [active]);
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -72,7 +71,10 @@ export default function ReportPage({ active }: { active: boolean }) {
 
   return (
     <>
-      <p className="public-lead">문제를 일으킨 플레이어의 닉네임과 사유를 적어주세요. 허위 신고는 제재될 수 있습니다.</p>
+      <div className="public-intro">
+        <p className="public-lead">문제를 일으킨 플레이어의 닉네임과 사유를 적어주세요.</p>
+        <p className="public-lead small">허위 신고는 제재될 수 있습니다.</p>
+      </div>
 
       {done ? <div className="banner banner-ok" role="status">신고가 접수되었습니다. 관리자가 확인합니다.</div> : null}
       {error ? <div className="banner banner-error" role="alert">{error}</div> : null}
@@ -86,8 +88,8 @@ export default function ReportPage({ active }: { active: boolean }) {
         </div>
       ) : (
         <>
-          <p className="small"><span className="muted">신고자</span> {st.reporter}</p>
-          <form className="stack" onSubmit={onSubmit}>
+          <p className="small"><span className="muted">신고자:</span> {st.reporter}</p>
+          <form className="stack report-form" onSubmit={onSubmit}>
             <label className="field">
               <span className="field-label">닉네임</span>
               <input name="targetName" list="online-players" maxLength={64} required autoComplete="off" placeholder="신고할 플레이어의 게임 닉네임" />
@@ -95,7 +97,7 @@ export default function ReportPage({ active }: { active: boolean }) {
             </label>
             <label className="field">
               <span className="field-label"><span>사유</span><span>{`${charCount(description)}/${MAX_DESCRIPTION}`}</span></span>
-              <textarea name="description" rows={5} required value={description} onChange={(e) => setDescription(e.target.value)}
+              <textarea name="description" className="small" rows={5} required value={description} onChange={(e) => setDescription(e.target.value)}
                 placeholder="언제, 어느 맵에서, 무슨 일이 있었는지 적어주세요" />
             </label>
             <button className="btn btn-primary btn-block" type="submit" disabled={busy || charCount(description) > MAX_DESCRIPTION}>신고 접수</button>
@@ -103,15 +105,20 @@ export default function ReportPage({ active }: { active: boolean }) {
 
           {st.mine.length ? (
             <section className="stack">
-              <h2 className="small muted">내 신고</h2>
-              <ul className="plain-list">
-                {st.mine.map((r) => (
-                  <li key={r.id} className="row-between small">
-                    <span>{r.targetName} <span className="muted">{fmtTime(r.createdAt)}</span></span>
-                    <span className={STATUS[r.status]?.cls}>{STATUS[r.status]?.label ?? r.status}</span>
-                  </li>
-                ))}
-              </ul>
+              <button className="btn btn-ghost btn-block" type="button" aria-expanded={showMine} aria-controls="my-reports" onClick={() => setShowMine((v) => !v)}>
+                {`내 신고 ${st.mine.length}건`}
+                <Icon icon={showMine ? faChevronUp : faChevronDown} />
+              </button>
+              {showMine ? (
+                <ul id="my-reports" className="plain-list">
+                  {st.mine.map((r) => (
+                    <li key={r.id} className="row-between small">
+                      <span>{r.targetName} <span className="muted">{fmtTime(r.createdAt)}</span></span>
+                      <span className={STATUS[r.status]?.cls}>{STATUS[r.status]?.label ?? r.status}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </section>
           ) : null}
         </>

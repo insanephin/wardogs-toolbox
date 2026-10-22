@@ -1,29 +1,39 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import { PAGES, PublicShell } from './components/publicNav.tsx';
-import type { PageId } from './components/publicNav.tsx';
-import { usePath } from './lib/publicRouter.ts';
+import { faXmark } from '@fortawesome/free-solid-svg-icons';
+import { PublicShell } from './components/publicNav.tsx';
+import { IconButton } from './components/iconButton.tsx';
+import { Overlay } from './lib/modal.tsx';
+import { followLink, leave, usePath } from './lib/publicRouter.ts';
 import LinkPage from './views/LinkPage.tsx';
 import ReportPage from './views/ReportPage.tsx';
 import './app.css';
 
 function PublicApp() {
-  const path = usePath();
-  const page = PAGES.find((p) => p.path === path) ?? PAGES[0];
-  const [visited, setVisited] = useState<ReadonlySet<PageId>>(() => new Set([page.id]));
+  const reporting = usePath() === '/report';
+  const closeReport = () => leave('/');
 
   useEffect(() => {
-    document.title = page.label;
-    setVisited((v) => (v.has(page.id) ? v : new Set(v).add(page.id)));
-  }, [page]);
+    if (location.search) history.replaceState(null, '', location.pathname);
+  }, []);
+  useEffect(() => {
+    document.title = reporting ? '신고' : '계정 등록';
+  }, [reporting]);
 
   return (
-    <PublicShell current={page.id}>
-      {PAGES.map(({ id }) => (visited.has(id) || id === page.id ? (
-        <section key={id} className="public-page" hidden={id !== page.id}>
-          {id === 'link' ? <LinkPage active={id === page.id} /> : <ReportPage active={id === page.id} />}
-        </section>
-      ) : null))}
+    <PublicShell>
+      <h1>계정 등록</h1>
+      <LinkPage />
+      <a className="btn btn-block" href="/report" onClick={followLink}>신고하기</a>
+      {reporting ? (
+        <Overlay label="신고" onClose={closeReport}>
+          <div className="modal-head-center">
+            <h2>신고</h2>
+            <IconButton icon={faXmark} label="닫기" className="btn-ghost" onClick={closeReport} />
+          </div>
+          <ReportPage />
+        </Overlay>
+      ) : null}
     </PublicShell>
   );
 }

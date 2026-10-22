@@ -5,6 +5,8 @@ import { api } from '../lib/api.ts';
 import { fmtTime, fmtDist, pct, describeEvent } from '../lib/format.ts';
 import { Card, Empty } from '../components/common.tsx';
 import { KillRow, EngagementCard } from '../components/feedItems.tsx';
+import { IconButton } from '../components/iconButton.tsx';
+import { faXmark } from '@fortawesome/free-solid-svg-icons';
 
 export default function Feed() {
   return (
@@ -116,10 +118,10 @@ function Engagements() {
           <div className="eng-detail">
             <div className="row-between">
               <strong>교전 #{detail.id} 상세</strong>
-              <button className="btn btn-ghost btn-sm" onClick={() => {
+              <IconButton icon={faXmark} label="닫기" className="btn-ghost" onClick={() => {
                 detailFor.current = null;
                 setDetail(null);
-              }}>닫기</button>
+              }} />
             </div>
             <div className="list-tight">{detail.kills.map((k) => <KillRow key={k.eventId} k={k} />)}</div>
           </div>

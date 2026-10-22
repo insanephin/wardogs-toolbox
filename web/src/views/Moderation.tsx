@@ -6,6 +6,8 @@ import { api, run, errorMessage } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
 import { fmtTime } from '../lib/format.ts';
 import { Card, Empty, useOnAction } from '../components/common.tsx';
+import { IconButton } from '../components/iconButton.tsx';
+import { faRotateRight, faTrash } from '@fortawesome/free-solid-svg-icons';
 
 const STEAM_ID = /^\d{17}$/;
 
@@ -40,7 +42,7 @@ export default function Moderation() {
 
   return (
     <div className="grid-main">
-      <Card title="밴 목록" extra={<button className="btn btn-sm" type="button" onClick={load}>새로고침</button>}>
+      <Card title="밴 목록" extra={<IconButton icon={faRotateRight} label="새로고침" onClick={load} />}>
         {can('mod') ? <BanForm onDone={load} /> : null}
         <div className="card-body"><div className="table-wrap"><BanTable data={bans} onChange={load} /></div></div>
       </Card>
@@ -204,7 +206,7 @@ function Reserved({ reloadTick }: { reloadTick: number }) {
           {all.map((id) => (
             <li key={id} className="row-between">
               <span><span className="mono">{id}</span> {badge(id)}</span>
-              {can('admin') && (!doc || doc.has(id)) ? <button className="btn btn-ghost btn-sm" type="button" onClick={() => remove(id)}>삭제</button> : null}
+              {can('admin') && (!doc || doc.has(id)) ? <IconButton icon={faTrash} label="삭제" className="btn-ghost" onClick={() => remove(id)} /> : null}
             </li>
           ))}
         </ul>

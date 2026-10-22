@@ -6,6 +6,8 @@ import { api, run, errorMessage } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
 import { Card, Empty } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
+import { IconButton } from '../components/iconButton.tsx';
+import { faArrowUp, faArrowDown, faTrash } from '@fortawesome/free-solid-svg-icons';
 
 const pick = (list: CatalogItem[], want: string | undefined): string => (want && list.some((x) => x.id === want) ? want : list[0]?.id ?? '');
 
@@ -298,12 +300,12 @@ function Rotation({ rev, admin, onChange }: { rev: number; admin: boolean; onCha
                 </td>
                 {editable ? (
                   <td className="nowrap">
-                    <button className="btn btn-sm" type="button" aria-label="위로" disabled={busy || i === 0}
-                      onClick={() => edit('로테이션 이동', 'POST', `/api/rotation/${i}/move`, { to: i - 1 })}>↑</button>
-                    <button className="btn btn-sm" type="button" aria-label="아래로" disabled={busy || i === entries.length - 1}
-                      onClick={() => edit('로테이션 이동', 'POST', `/api/rotation/${i}/move`, { to: i + 1 })}>↓</button>
-                    <button className="btn btn-sm btn-danger-outline" type="button" disabled={busy || entries.length <= 1}
-                      onClick={() => remove(i, e)}>삭제</button>
+                    <IconButton icon={faArrowUp} label="위로" disabled={busy || i === 0}
+                      onClick={() => edit('로테이션 이동', 'POST', `/api/rotation/${i}/move`, { to: i - 1 })} />
+                    <IconButton icon={faArrowDown} label="아래로" disabled={busy || i === entries.length - 1}
+                      onClick={() => edit('로테이션 이동', 'POST', `/api/rotation/${i}/move`, { to: i + 1 })} />
+                    <IconButton icon={faTrash} label="삭제" className="btn-danger-outline" disabled={busy || entries.length <= 1}
+                      onClick={() => remove(i, e)} />
                   </td>
                 ) : null}
               </tr>

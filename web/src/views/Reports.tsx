@@ -3,12 +3,14 @@ import type { Report } from '../lib/types.ts';
 import { can, useStore } from '../lib/store.ts';
 import { api, run, errorMessage } from '../lib/api.ts';
 import { modal } from '../lib/modal.tsx';
-import { fmtTime } from '../lib/format.ts';
+import { fmtDateTime } from '../lib/format.ts';
 import { Card, Empty, useOnAction } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
+import { IconButton } from '../components/iconButton.tsx';
+import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
 
 const STATUS_LABEL: Record<string, string> = { open: '접수', resolved: '처리 완료', rejected: '반려' };
-const FILTERS = [...Object.entries(STATUS_LABEL), ['all', '전체']];
+const FILTERS = [['all', '전체'], ...Object.entries(STATUS_LABEL)];
 
 interface Data {
   categories: Record<string, string>;
@@ -59,7 +61,7 @@ export default function Reports() {
   const cat = (id: string) => data?.categories[id] ?? id;
 
   return (
-    <Card title="신고" extra={<button className="btn btn-sm" type="button" onClick={load}>새로고침</button>}>
+    <Card title="신고" extra={<IconButton icon={faRotateRight} label="새로고침" onClick={load} />}>
       <div className="toolbar">
         <div className="seg" role="tablist">
           {FILTERS.map(([id, label]) => (
@@ -76,24 +78,24 @@ export default function Reports() {
               <tbody>
                 {data.reports.map((r) => (
                   <tr key={r.id}>
-                    <td className="nowrap">{fmtTime(r.createdAt)}{r.map ? <div className="muted small">{r.map}</div> : null}</td>
-                    <td>
+                    <td className="nowrap">{fmtDateTime(r.createdAt)}{r.map ? <div className="muted small">{r.map}</div> : null}</td>
+                    <td className="nowrap">
                       {r.targetName}
                       <div className="mono small muted">{r.targetSteamId ?? 'SteamID 모름'}</div>
                     </td>
                     <td className="nowrap">{cat(r.category)}</td>
-                    <td className="small">
+                    <td className="small report-content">
                       <div className="report-desc">{r.description}</div>
                       {r.evidenceUrl ? <a className="link" href={r.evidenceUrl} target="_blank" rel="noopener noreferrer">증거 링크</a> : null}
                     </td>
-                    <td className="small">
+                    <td className="small nowrap">
                       {r.reporterChzzkName ? <div>{`${r.reporterChzzkName} (치지직)`}</div> : null}
                       {r.reporterSteamName ? <div>{`${r.reporterSteamName} (스팀)`}</div> : null}
                       {r.reporterSteamId ? <div className="mono muted">{r.reporterSteamId}</div> : null}
                     </td>
-                    <td className="small">
+                    <td className="small nowrap">
                       <span className={r.status === 'open' ? 'tag tag-danger' : 'tag'}>{STATUS_LABEL[r.status] ?? r.status}</span>
-                      {r.handledBy ? <div className="muted">{`${r.handledBy} · ${fmtTime(r.handledAt)}`}</div> : null}
+                      {r.handledBy ? <div className="muted">{`${r.handledBy} · ${fmtDateTime(r.handledAt)}`}</div> : null}
                       {r.note ? <div className="report-desc muted">{r.note}</div> : null}
                     </td>
                     {can('mod') ? <td><button className="btn btn-sm" type="button" onClick={() => handle(r)}>처리</button></td> : null}

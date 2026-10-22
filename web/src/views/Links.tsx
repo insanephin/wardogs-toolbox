@@ -7,6 +7,8 @@ import { confirmAction } from '../lib/modal.tsx';
 import { fmtTime, charCount } from '../lib/format.ts';
 import { Card, Empty, useOnAction } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
+import { IconButton } from '../components/iconButton.tsx';
+import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
 
 const WHITELIST_LABELS: Record<WhitelistMode, string> = { off: '꺼짐', kick: '미연동 킥', ban: '미연동 밴' };
 const MODE_HELP: Record<WhitelistMode, string> = {
@@ -41,7 +43,7 @@ export default function Links() {
 
   return (
     <div className="grid-main">
-      <Card title="연동된 계정" extra={<button className="btn btn-sm" type="button" onClick={load}>새로고침</button>}>
+      <Card title="연동된 계정" extra={<IconButton icon={faRotateRight} label="새로고침" onClick={load} />}>
         <div className="toolbar">
           <input type="search" placeholder="스팀·치지직 이름 또는 ID" aria-label="연동 검색" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
