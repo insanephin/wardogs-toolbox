@@ -50,13 +50,17 @@ export function registerApi(router: Router, ctx: ApiContext): void {
   const catalogCache: { at: number; data: Awaited<ReturnType<RconClient['catalog']>> | null } = { at: 0, data: null };
 
   const ROTATION_ACTIONS = new Set(['rotation_add', 'rotation_set_next', 'rotation_move', 'rotation_remove', 'rotation_settings', 'rotation_jump', 'change_map', 'end_match', 'settings_update', 'config_apply']);
+  const MANUAL_MAP_ACTIONS = new Set(['change_map', 'rotation_jump', 'end_match']);
   const act = async <T>(session: Session, action: string, target: string | null, detail: unknown, fn: () => Promise<T>): Promise<T> => {
+    const manualMap = MANUAL_MAP_ACTIONS.has(action);
+    if (manualMap) poller.expectManualMapChange();
     try {
       const result = await fn();
       if (ROTATION_ACTIONS.has(action)) poller.refreshRotation();
       hub.broadcast('action', store.logAction(session.name, action, target, detail, true));
       return result;
     } catch (err) {
+      if (manualMap) poller.cancelManualMapChange();
       hub.broadcast('action', store.logAction(session.name, action, target, detail, false, errorMessage(err)));
       throw err;
     }
@@ -178,7 +182,7 @@ export function registerApi(router: Router, ctx: ApiContext): void {
 
   route('DELETE', '/api/streamers/:discordId', 'mod', ({ params, session }) => {
     const link = store.discordLink('discord', params.discordId);
-    if (!link) throw new HttpError(404, 'not_found', '인증된 스트리머가 아닙니다');
+    if (!link) throw new HttpError(404, 'not_found', '화이트리스트에 등록된 유저가 아닙니다');
     return act(session, 'streamer_remove', link.steamId, { discordId: link.discordId, discord: link.discordName },
       () => discord.revoke(link.discordId));
   });
@@ -190,19 +194,31 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     if (!body.active) {
       return act(session, 'entry_gate_stop', null, null, async () => {
         store.setEntryGate({ ...prev, active: false, startedAt: null, openAt: null });
+        hub.broadcast('live', poller.snapshot());
         return poller.entryGateView();
       });
     }
     const threshold = Number(body.threshold);
-    if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) throw new HttpError(400, 'bad_threshold', '스트리머 인원은 1~100명입니다');
+    if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) throw new HttpError(400, 'bad_threshold', '화이트리스트 인원은 1~100명입니다');
     const minutes = Number(body.minutes ?? 0);
     if (!Number.isInteger(minutes) || minutes < 0 || minutes > 180) throw new HttpError(400, 'bad_minutes', '자동 해제 시간은 0~180분입니다 (0은 끄기)');
     const message = requireText(body.message, '안내 문구', MAX_REASON);
     const now = Date.now();
     return act(session, 'entry_gate_start', null, { threshold, minutes, message }, async () => {
       store.setEntryGate({ active: true, threshold, message, startedAt: prev.active ? prev.startedAt : now, openAt: minutes ? now + minutes * 60_000 : null });
+      hub.broadcast('live', poller.snapshot());
       poller.nudge();
       return poller.entryGateView();
+    });
+  });
+
+  route('PUT', '/api/turnover', 'admin', ({ body, session }) => {
+    const enabled = !!body.enabled;
+    const message = requireText(body.message, '안내 문구', MAX_REASON);
+    return act(session, 'turnover_update', null, { enabled, message }, async () => {
+      store.setTurnover({ enabled, message });
+      hub.broadcast('live', poller.snapshot());
+      return poller.turnoverView();
     });
   });
 
@@ -211,7 +227,7 @@ export function registerApi(router: Router, ctx: ApiContext): void {
   route('PUT', '/api/whitelist', 'admin', ({ body, session }) => {
     const mode = String(body.mode ?? '') as WhitelistMode;
     if (!WHITELIST_MODES.includes(mode)) throw new HttpError(400, 'bad_mode', '모드는 off, kick, ban 중 하나입니다');
-    const message = requireText(body.message, '안내 문구', MAX_REASON);
+    const message = mode === 'off' ? store.whitelist().message : requireText(body.message, '안내 문구', MAX_REASON);
     return act(session, 'whitelist_update', mode, { message }, async () => {
       store.setWhitelist({ mode, message });
       poller.nudge();
@@ -233,7 +249,7 @@ export function registerApi(router: Router, ctx: ApiContext): void {
   route('DELETE', '/api/reserved/:steamId', 'admin', ({ params, session }) => {
     const id = requireSteamId(params.steamId);
     if (store.discordLink('steam', id)) {
-      throw new HttpError(409, 'streamer_slot', '인증된 스트리머의 예약 슬롯입니다. 빼려면 연동 탭에서 스트리머를 해제하세요');
+      throw new HttpError(409, 'streamer_slot', '화이트리스트 유저의 예약 슬롯입니다. 빼려면 연동 탭에서 화이트리스트를 해제하세요');
     }
     return editReserved(session, id, false);
   });
@@ -358,6 +374,25 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     });
   });
 
+  const rconView = () => ({ url: rcon.baseUrl, passwordSet: !!rcon.password });
+  route('GET', '/api/rcon', 'admin', rconView);
+  route('PUT', '/api/rcon', 'admin', ({ body, session }) => {
+    const url = requireRconUrl(body.url);
+    const password = body.password == null || body.password === '' ? null : requireText(body.password, 'RCON 비밀번호', 200);
+    return act(session, 'rcon_update', null, { password: password != null }, async () => {
+      const next = { ...store.rconTarget(), url, ...(password != null ? { password } : {}) };
+      store.setRconTarget(next);
+      rcon.setTarget(url, next.password ?? '');
+      poller.nudge();
+      return rconView();
+    });
+  });
+
+  route('POST', '/api/feed-token', 'admin', ({ session }) => {
+    if (!config.feedToken) throw new HttpError(404, 'no_feed_token', '.env에 FEED_TOKEN이 없습니다');
+    return act(session, 'feed_token_copy', null, null, async () => ({ token: config.feedToken }));
+  });
+
   route('GET', '/api/settings', 'admin', async () => {
     const doc = await rcon.config();
     return {
@@ -465,3 +500,15 @@ export function registerApi(router: Router, ctx: ApiContext): void {
   router.add('POST', '/api/ingest/events/api/ingest/events', { public: true, rawBody: true }, ingest);
 }
 
+function requireRconUrl(v: unknown): string {
+  const bad = () => new HttpError(400, 'bad_rcon_url', 'RCON 주소는 http://호스트:포트 형식이어야 합니다');
+  if (typeof v !== 'string' || !v.trim() || v.length > 300) throw bad();
+  let u: URL;
+  try {
+    u = new URL(v.trim());
+  } catch {
+    throw bad();
+  }
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password || u.search || u.hash) throw bad();
+  return `${u.origin}${u.pathname}`.replace(/\/+$/, '');
+}

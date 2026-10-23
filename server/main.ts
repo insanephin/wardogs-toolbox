@@ -41,7 +41,8 @@ function createApp(config: Config) {
   const auth = new Auth(config.admins);
   const store = new Store(config.dbPath);
   const hub = new SseHub();
-  const rcon = new RconClient({ baseUrl: config.rconUrl, password: config.rconPassword });
+  const saved = store.rconTarget();
+  const rcon = new RconClient({ baseUrl: saved.url ?? '', password: saved.password ?? '' });
 
   let poller: Poller;
   const feed = new FeedProcessor({
@@ -51,6 +52,7 @@ function createApp(config: Config) {
     minKills: config.engagementMinKills,
     factionOf: (id: string) => poller.factionOf(id),
     emit: (event, data) => hub.broadcast(event, data),
+    onMatchEnd: () => poller.onMatchEnd(),
   });
   const steam = createSteamProfiles(config.steam.apiKey);
   poller = new Poller({ rcon, store, feed, emit: (e, d) => hub.broadcast(e, d), watchers: () => hub.size, steam });
@@ -175,13 +177,13 @@ function createApp(config: Config) {
 
   const server = createServer((req, res) => handle(req, res).catch(onError(res)));
 
-  return { server, auth, poller, discord };
+  return { server, auth, poller, discord, rcon };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = loadConfig();
   const app = createApp(config);
-  if (!config.rconPassword) console.warn('[경고] RCON_PASSWORD가 비어 있습니다. 게임 서버가 인증을 거부할 것입니다.');
+  if (!app.rcon.baseUrl || !app.rcon.password) console.warn('[경고] RCON 연결 정보가 없습니다. 관리자 패널 서버 탭에서 주소와 비밀번호를 입력하세요.');
   if (!config.feedToken) console.warn('[경고] FEED_TOKEN이 비어 있어 이벤트 피드를 받지 않습니다.');
   if (!app.auth.admins.size) console.warn('[경고] ADMIN_CHZZK_IDS가 비어 있어 아무도 관리자 패널에 로그인할 수 없습니다.');
   if (!config.chzzk.clientId || !config.chzzk.clientSecret || !config.chzzk.redirectUrl) {
@@ -193,7 +195,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   app.server.listen(config.port, config.host, () => {
     console.log(`워독스 도구집: http://${config.host}:${config.port}/rcon`);
-    console.log(`RCON 대상: ${config.rconUrl}`);
     console.log(`이벤트 피드 수신: http://<이 서버 주소>:${config.port}/api/ingest/events`);
   });
   if (config.adminAllowIps.length) console.log(`관리자 허용 IP: ${config.adminAllowIps.join(', ')}`);

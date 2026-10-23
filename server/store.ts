@@ -201,8 +201,14 @@ export interface EntryGate {
   openAt: number | null;
 }
 const ENTRY_GATE_DEFAULT: EntryGate = {
-  active: false, threshold: 5, message: '스트리머 입장 중입니다. 잠시 후 다시 접속해주세요.', startedAt: null, openAt: null,
+  active: false, threshold: 5, message: '화이트리스트 입장 시간입니다. 잠시 후 다시 접속해주세요.', startedAt: null, openAt: null,
 };
+
+export interface Turnover {
+  enabled: boolean;
+  message: string;
+}
+const TURNOVER_DEFAULT: Turnover = { enabled: false, message: '맵이 끝나 교대 입장 중입니다. 30초 뒤 다시 접속할 수 있습니다.' };
 
 type Row = Record<string, any>;
 
@@ -337,6 +343,8 @@ export interface DiscordLink {
   lastError: string | null;
 }
 
+export type StreamerPair = Pick<DiscordLink, 'steamId' | 'steamName' | 'chzzkChannelId' | 'chzzkName'>;
+
 const DISCORD_COLUMNS = `discord_id AS discordId, discord_name AS discordName, steam_id AS steamId, steam_name AS steamName,
   chzzk_channel_id AS chzzkChannelId, chzzk_name AS chzzkName, linked_at AS linkedAt, reserved, last_error AS lastError`;
 
@@ -368,6 +376,11 @@ const REPORT_COLUMNS = `id, created_at AS createdAt,
   reporter_steam_id AS reporterSteamId, reporter_steam_name AS reporterSteamName,
   target_name AS targetName, target_steam_id AS targetSteamId, category, description,
   evidence_url AS evidenceUrl, map, status, handled_by AS handledBy, handled_at AS handledAt, note`;
+
+export interface RconTarget {
+  url?: string;
+  password?: string;
+}
 
 export class Store {
   db: DatabaseSync;
@@ -645,7 +658,7 @@ export class Store {
       ORDER BY linked_at DESC`).all() as Row[]).map(rowToDiscordLink);
   }
 
-  saveDiscordLink(discordId: string, discordName: string, link: Link, at: number): void {
+  saveDiscordLink(discordId: string, discordName: string, link: StreamerPair, at: number): void {
     this.db.prepare(`INSERT INTO discord_links (discord_id, discord_name, steam_id, steam_name, chzzk_channel_id, chzzk_name, linked_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(discord_id) DO UPDATE SET discord_name = excluded.discord_name, steam_name = excluded.steam_name,
@@ -699,6 +712,26 @@ export class Store {
 
   setEntryGate(value: EntryGate): void {
     this.db.prepare(`INSERT INTO settings (key, value) VALUES ('entry_gate', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
+  }
+
+  turnover(): Turnover {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'turnover'").get() as Row | undefined;
+    return { ...TURNOVER_DEFAULT, ...(row ? JSON.parse(row.value) : {}) };
+  }
+
+  setTurnover(value: Turnover): void {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('turnover', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
+  }
+
+  rconTarget(): RconTarget {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'rcon'").get() as Row | undefined;
+    return row ? JSON.parse(row.value) : {};
+  }
+
+  setRconTarget(value: RconTarget): void {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('rcon', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
   }
 

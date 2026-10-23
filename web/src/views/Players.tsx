@@ -115,7 +115,7 @@ export default function Players() {
 }
 
 function LinkCell({ link, streamer }: { link: Link | null; streamer: Streamer | null }) {
-  if (streamer) return <div className="small"><span className="tag tag-streamer">스트리머</span>{link ? `치지직 ${link.chzzkName || link.chzzkChannelId}` : streamer.discordName}</div>;
+  if (streamer) return <div className="small"><span className="tag tag-streamer">화이트리스트</span>{link ? `치지직 ${link.chzzkName || link.chzzkChannelId}` : streamer.discordName}</div>;
   if (!link) return <span className="tag tag-danger">미연동</span>;
   return (
     <div className="small">{`치지직 ${link.chzzkName || link.chzzkChannelId}`}</div>
@@ -180,7 +180,7 @@ function InfoTable({ link, streamer, seen }: { link: Link | null; streamer: Stre
       <tbody>
         {streamer ? (
           <tr>
-            <th scope="row">스트리머</th>
+            <th scope="row">화이트리스트</th>
             <td><span className="tag tag-streamer">디스코드 인증</span>{`${streamer.discordName ?? streamer.discordId} · ${streamer.reserved ? '접속 우선권 적용' : '우선권 적용 대기'}`}</td>
           </tr>
         ) : null}

@@ -14,8 +14,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     host: env.DASH_HOST || '127.0.0.1',
     port: int('DASH_PORT', 8080),
     admins: env.ADMIN_CHZZK_IDS || '',
-    rconUrl: (env.RCON_URL || 'http://127.0.0.1:7776').replace(/\/+$/, ''),
-    rconPassword: env.RCON_PASSWORD || '',
     feedToken: env.FEED_TOKEN || '',
     engagementGapSec: int('ENGAGEMENT_GAP_SEC', 15),
     engagementMinKills: int('ENGAGEMENT_MIN_KILLS', 3),

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { Config } from './config.ts';
-import type { Store, DiscordLink, Link } from './store.ts';
+import type { Store, DiscordLink, StreamerPair } from './store.ts';
 import type { RconClient } from './rcon.ts';
 import { sqlNow } from './link.ts';
 import type { Account, Provider } from './link.ts';
@@ -138,29 +138,34 @@ export function createDiscord({ config, store, rcon, emit }: DiscordOptions) {
     const t = tickets.get(id);
     if (!t || !valid(id)) return 'expired';
     t[provider] = account;
-    let pair: Link | null;
-    if (!t.chzzk || !t.steam) {
+    let pair: StreamerPair | null;
+    if (t.chzzk && t.steam) {
+      const free = [store.linkByAccount('steam', t.steam.id), store.linkByAccount('chzzk', t.chzzk.id)]
+        .every((l) => !l || (l.steamId === t.steam!.id && l.chzzkChannelId === t.chzzk!.id));
+      if (!free) return reject(t, provider);
+      pair = { steamId: t.steam.id, steamName: t.steam.name, chzzkChannelId: t.chzzk.id, chzzkName: t.chzzk.name };
+    } else if (t.steam) {
+      pair = store.linkByAccount('steam', t.steam.id)
+        ?? { steamId: t.steam.id, steamName: t.steam.name, chzzkChannelId: null, chzzkName: null };
+    } else {
       pair = store.linkByAccount(provider, account.id);
       if (!pair) {
         settle(t, 'proven', false);
         return 'proven';
       }
-    } else {
-      const free = [store.linkByAccount('steam', t.steam.id), store.linkByAccount('chzzk', t.chzzk.id)]
-        .every((l) => !l || (l.steamId === t.steam!.id && l.chzzkChannelId === t.chzzk!.id));
-      if (!free) return reject(t, provider);
-      pair = { steamId: t.steam.id, steamName: t.steam.name, chzzkChannelId: t.chzzk.id, chzzkName: t.chzzk.name, linkedAt: null };
     }
     const owner = store.discordLink('steam', pair.steamId);
     if (owner && owner.discordId !== t.discordId) return reject(t, provider);
 
     t.claimed = true;
-    t.chzzk ={ id: pair.chzzkChannelId, name: pair.chzzkName ?? pair.chzzkChannelId };
     t.steam = { id: pair.steamId, name: pair.steamName ?? pair.steamId };
-    store.linkIfFree(t.steam, t.chzzk, sqlNow());
+    if (pair.chzzkChannelId) {
+      t.chzzk = { id: pair.chzzkChannelId, name: pair.chzzkName ?? pair.chzzkChannelId };
+      store.linkIfFree(t.steam, t.chzzk, sqlNow());
+    }
     const prev = store.discordLink('discord', t.discordId);
     store.saveDiscordLink(t.discordId, t.discordName, pair, Date.now());
-    console.log(`[디스코드] 스트리머 인증: ${t.discordName} (${t.discordId}) → 치지직 ${t.chzzk.name} · 스팀 ${t.steam.name} (${t.steam.id})`);
+    console.log(`[디스코드] 화이트리스트 등록: ${t.discordName} (${t.discordId}) → ${t.chzzk ? `치지직 ${t.chzzk.name} · ` : ''}스팀 ${t.steam.name} (${t.steam.id})`);
     if (prev && prev.steamId !== pair.steamId && prev.reserved) {
       store.addDiscordRelease(prev.steamId);
       release(prev.steamId).catch(() => {});

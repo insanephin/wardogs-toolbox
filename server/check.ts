@@ -2,6 +2,8 @@ import { loadConfig } from './config.ts';
 import { RconClient } from './rcon.ts';
 import type { RconError } from './rcon.ts';
 import { parseAdmins } from './auth.ts';
+import { Store } from './store.ts';
+import { existsSync } from 'node:fs';
 
 const config = loadConfig();
 let failed = false;
@@ -23,13 +25,16 @@ try {
 } catch (err) {
   bad((err as Error).message);
 }
-if (!process.env.RCON_URL) bad('RCON_URL이 비어 있습니다', '예: http://203.0.113.10:7776 (게임 서버 주소와 RCON 포트)');
-if (!config.rconPassword) bad('RCON_PASSWORD가 비어 있습니다', '게임 서버 ini의 Password 또는 Saved/RCON/ADMIN-PASSWORD.txt 값');
+const saved = existsSync(config.dbPath) ? new Store(config.dbPath).rconTarget() : {};
+const rconUrl = saved.url ?? '';
+const rconPassword = saved.password ?? '';
+if (!rconUrl) bad('RCON 주소가 없습니다', "관리자 패널 '서버' 탭에서 입력하세요 (예: http://203.0.113.10:7776)");
+if (!rconPassword) bad('RCON 비밀번호가 없습니다', "관리자 패널 '서버' 탭에서 입력하세요 (게임 서버 ini의 Password 또는 Saved/RCON/ADMIN-PASSWORD.txt 값)");
 if (!config.feedToken) warn('FEED_TOKEN이 비어 있어 킬피드·교전 기능이 동작하지 않습니다');
 else if (config.feedToken.length < 24) warn('FEED_TOKEN이 짧습니다. 24자 이상 무작위 값을 권장합니다');
 
-console.log(`\nRCON ${config.rconUrl}`);
-const rcon = new RconClient({ baseUrl: config.rconUrl, password: config.rconPassword, timeoutMs: 6000 });
+console.log('\nRCON');
+const rcon = new RconClient({ baseUrl: rconUrl, password: rconPassword, timeoutMs: 6000 });
 try {
   const caps = await rcon.loadCapabilities();
   ok(`연결·인증 성공 · 빌드 ${caps.build ?? '?'} · API v${caps.apiVersion ?? '?'} · 경로 ${caps.routes?.length ?? 0}개`);
@@ -50,7 +55,7 @@ try {
 } catch (e) {
   const err = e as RconError;
   if (err.status === 401 || err.status === 403) {
-    bad(`인증 거부 (${err.status})`, 'RCON_PASSWORD가 게임 서버 비밀번호와 같은지 확인하세요');
+    bad(`인증 거부 (${err.status})`, 'RCON 비밀번호가 게임 서버 비밀번호와 같은지 확인하세요');
   } else if (err.code === 'unreachable' || err.code === 'timeout') {
     bad(err.message, [
       '게임 서버에서 RCON이 켜져 있는지(bEnabled=true), 포트(기본 7776)가 맞는지 확인하세요.',

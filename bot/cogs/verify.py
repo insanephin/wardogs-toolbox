@@ -40,10 +40,11 @@ class Verify(commands.Cog):
             return await interaction.response.send_message(view=ErrorView("지금은 인증 서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요."), ephemeral=True)
 
         def render(state: TicketState) -> LayoutView:
+            accounts = f"치지직 **{state.chzzk_name}** · 스팀 **{state.steam_name}**" if state.chzzk_name else f"스팀 **{state.steam_name}**"
             if state.result == "reserved":
-                return SuccessView(f"치지직 **{state.chzzk_name}** · 스팀 **{state.steam_name}**(으)로 스트리머 인증을 완료했습니다. 서버 접속 우선권이 적용되었습니다.")
+                return SuccessView(f"{accounts}(으)로 화이트리스트 등록을 완료했습니다. 서버 접속 우선권이 적용되었습니다.")
             if state.result == "queued":
-                return SuccessView(f"치지직 **{state.chzzk_name}** · 스팀 **{state.steam_name}**(으)로 스트리머 인증을 완료했습니다. 게임 서버에 연결되는 대로 접속 우선권이 적용됩니다.")
+                return SuccessView(f"{accounts}(으)로 화이트리스트 등록을 완료했습니다. 게임 서버에 연결되는 대로 접속 우선권이 적용됩니다.")
             if state.done:
                 return ErrorView("인증 링크가 만료되었습니다. 패널의 인증하기 버튼을 다시 눌러주세요.")
             if state.result == "taken":

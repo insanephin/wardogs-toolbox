@@ -115,6 +115,15 @@ export class RconClient {
     this.timeoutMs = timeoutMs;
   }
 
+  setTarget(url: string, password: string): void {
+    this.baseUrl = url;
+    this.password = password;
+    this.holdUntil = 0;
+    this.capabilities = null;
+    this.routes = new Set();
+    this.features = RconClient.noFeatures();
+  }
+
   static noFeatures() {
     return {
       changeTeam: false,
@@ -130,6 +139,9 @@ export class RconClient {
   }
 
   async request(method: string, path: string, { json, text, headers = {}, query }: RequestOptions = {}) {
+    if (!this.baseUrl || !this.password) {
+      throw new RconError(0, 'not_configured', 'RCON 연결 정보가 없습니다. 관리자 패널 서버 탭에서 입력하세요');
+    }
     if (Date.now() < this.holdUntil) {
       throw new RconError(429, 'rate_limited', `RCON 요청 한도 초과, ${Math.ceil((this.holdUntil - Date.now()) / 1000)}초 후 재시도`);
     }

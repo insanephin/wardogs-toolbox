@@ -7,6 +7,8 @@ const IGNORED_TAGS = new Set(['Kill', 'Death']);
 const CLOCK_RESET_SEC = 30;
 const RESUME_MATCH_WITHIN_MS = 10 * 60 * 1000;
 
+const isPostMatch = (state: string | undefined) => !!state?.startsWith('MatchState.PostMatch');
+
 function shortTag(tag: unknown): string {
   return String(tag).replace(/^.*\./, '');
 }
@@ -35,6 +37,7 @@ interface FeedOptions {
   minKills: number;
   factionOf: (steamId: string) => string | null;
   emit: Emit;
+  onMatchEnd?: () => void;
 }
 
 export class FeedProcessor {
@@ -44,6 +47,7 @@ export class FeedProcessor {
   minKills: number;
   factionOf: (steamId: string) => string | null;
   emit: Emit;
+  onMatchEnd: () => void;
 
   matchKey: string | null = null;
   map: string | null = null;
@@ -55,7 +59,8 @@ export class FeedProcessor {
   batches = 0;
   rejected = 0;
 
-  constructor({ store, weapons, gapSec, minKills, factionOf, emit }: FeedOptions) {
+  constructor({ store, weapons, gapSec, minKills, factionOf, emit, onMatchEnd = () => {} }: FeedOptions) {
+    this.onMatchEnd = onMatchEnd;
     this.store = store;
     this.weapons = weapons;
     this.gapSec = gapSec;
@@ -106,6 +111,7 @@ export class FeedProcessor {
     this.lastBatchAt = receivedAt;
     if (body.serverName) this.serverName = body.serverName;
 
+    const wasPostMatch = isPostMatch(this.matchState?.state);
     let accepted = 0;
     let duplicates = 0;
     for (const e of body.events as FeedEvent[]) {
@@ -114,6 +120,7 @@ export class FeedProcessor {
       if (fresh) accepted++;
       else duplicates++;
     }
+    if (!wasPostMatch && isPostMatch(this.matchState?.state)) this.onMatchEnd();
     this.emit('feed', this.status());
     return { ok: true, accepted, duplicates };
   }

@@ -8,7 +8,7 @@ import { Card, Empty, useNow } from '../components/common.tsx';
 import type { ReactNode } from 'react';
 import type { Capabilities, FeedEndpoint, Live } from '../lib/types.ts';
 import { IconButton } from '../components/iconButton.tsx';
-import { faCopy } from '@fortawesome/free-solid-svg-icons';
+import { faCopy, faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
 
 type KvRow = [label: string, value: ReactNode, cls?: string];
 
@@ -24,13 +24,21 @@ export default function Server() {
   const live = useStore((s) => s.live);
   useNow();
   const f = live?.feed;
-  const snippet = [
-    '[/Script/WDRCON.WDRCONSettings]',
+  const snippet = (token: string, serverName: string) => [
     'bEventFeedEnabled=True',
     '!EventFeedEndpoints=ClearArray',
-    `.EventFeedEndpoints=(Url="${location.origin}/api/ingest/events",Token="<FEED_TOKEN 값>")`,
-    `EventFeedServerName=${live?.status?.serverName ?? '<서버 이름>'}`,
+    `.EventFeedEndpoints=(Url="${location.origin}/api/ingest/events",Token="${token}")`,
+    `EventFeedServerName=${serverName}`,
   ].join('\n');
+  const copySnippet = async () => {
+    try {
+      const { token } = await api<{ token: string }>('POST', '/api/feed-token');
+      await navigator.clipboard.writeText(snippet(token, live?.status?.serverName ?? '<서버 이름>'));
+      toast('복사했습니다');
+    } catch (err) {
+      toast(`복사하지 못했습니다: ${errorMessage(err)}`, 'error');
+    }
+  };
 
   const kv = (rows: KvRow[]) => (
     <dl className="kv card-body">
@@ -65,13 +73,15 @@ export default function Server() {
           ])}
         </Card>
       </div>
+      {can('admin') ? <RconCard /> : null}
       {can('admin') && live?.gameFeed?.endpoints?.length ? <EndpointsCard endpoints={live.gameFeed.endpoints} /> : null}
       <SponsorCard />
       {can('admin') ? (
-        <Card title="피드 연결" extra={<IconButton icon={faCopy} label="복사" onClick={() => navigator.clipboard?.writeText(snippet).then(() => toast('복사했습니다'))} />}>
+        <Card title="피드 연결" extra={<IconButton icon={faCopy} label="토큰 포함 복사" onClick={copySnippet} />}>
           <div className="card-body stack">
-            <p className="muted small">ServerSettings.ini에 넣고 재시작. Url은 게임 서버에서 닿는 주소로.</p>
-            <pre className="code">{snippet}</pre>
+            <p className="muted small">ServerSettings.ini에 <code>[/Script/WDRCON.WDRCONSettings]</code> 줄 바로 밑에 복붙한 후 재시작하세요.</p>
+            <p className="muted small">토큰과 서버 이름은 화면에 가려져 있어도 복사본에는 실제 값이 들어갑니다.</p>
+            <pre className="code">{snippet('********', '********')}</pre>
           </div>
         </Card>
       ) : null}
@@ -81,6 +91,59 @@ export default function Server() {
         </div>
       </Card>
     </div>
+  );
+}
+
+type RconTarget = { url: string; passwordSet: boolean };
+
+function RconCard() {
+  const [saved, setSaved] = useState<RconTarget | null>(null);
+  const [error, setError] = useState('');
+  const [url, setUrl] = useState('');
+  const [password, setPassword] = useState('');
+  const [shown, setShown] = useState(false);
+
+  const load = () => api<RconTarget>('GET', '/api/rcon').then((d) => {
+    setSaved(d);
+    setUrl(d.url);
+    setPassword('');
+  }, (err) => setError(errorMessage(err)));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    if (await run('RCON 연결 정보', 'PUT', '/api/rcon', { url: url.trim(), password })) {
+      setShown(false);
+      load();
+    }
+  };
+
+  const dirty = !!saved && (url.trim() !== saved.url || password !== '');
+
+  return (
+    <Card title="RCON 연결 정보">
+      <div className="card-body stack">
+        {error ? <Empty>불러오지 못했습니다: {error}</Empty> : (
+          <form className="stack" onSubmit={save} autoComplete="off">
+            <div className="inline-field">
+              <input type={shown ? 'text' : 'password'} autoComplete="off" spellCheck={false} placeholder="http://호스트:7776" aria-label="RCON 주소"
+                maxLength={300} value={url} disabled={!saved} onChange={(e) => setUrl(e.target.value)} />
+              <IconButton icon={shown ? faEyeSlash : faEye} label={shown ? '주소 가리기' : '주소 보기'} onClick={() => setShown(!shown)} />
+            </div>
+            <div className="inline-field">
+              <input type="password" autoComplete="new-password" aria-label="RCON 비밀번호" maxLength={200} value={password} disabled={!saved}
+                placeholder={saved?.passwordSet ? '설정됨 · 바꿀 때만 입력' : '비밀번호 입력'} onChange={(e) => setPassword(e.target.value)} />
+              <button className="btn" type="submit" disabled={!dirty || !url.trim()}>저장</button>
+            </div>
+          </form>
+        )}
+        <p className="muted small">
+          게임 서버 주소·RCON 포트와 비밀번호(게임 서버 ini의 Password). 저장하면 바로 다시 연결합니다. 비밀번호는 저장된 뒤 다시 볼 수 없습니다.
+        </p>
+      </div>
+    </Card>
   );
 }
 

@@ -257,13 +257,13 @@ function Reserved({ reloadTick }: { reloadTick: number }) {
         <ul className="plain-list">
           {all.map((id) => (
             <li key={id} className="row-between">
-              <span className="inline-row"><SteamWho id={id} profiles={profiles} />{streamers.has(id) ? <span className="tag tag-streamer">스트리머</span> : null}{badge(id)}</span>
+              <span className="inline-row"><SteamWho id={id} profiles={profiles} />{streamers.has(id) ? <span className="tag tag-streamer">화이트리스트</span> : null}{badge(id)}</span>
               {can('admin') && !streamers.has(id) && (!doc || doc.has(id)) ? <IconButton icon={faTrash} label="삭제" className="btn-ghost" onClick={() => remove(id)} /> : null}
             </li>
           ))}
         </ul>
       ) : <Empty>예약 슬롯이 비어 있습니다.</Empty>}
-      <p className="muted small">스트리머 슬롯은 자동으로 유지됩니다. 빼려면 연동 탭에서 스트리머를 해제하세요.</p>
+      <p className="muted small">화이트리스트 슬롯은 자동으로 유지됩니다. 빼려면 연동 탭에서 화이트리스트를 해제하세요.</p>
       <p className="muted small">MaxReservedSlots는 비워 두는 자리 수이고, 목록에 있는 사람은 수와 상관없이 대기열을 건너뜁니다.</p>
     </>
   );

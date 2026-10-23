@@ -15,6 +15,10 @@ const NAME_SETTLE_MS = 60_000;
 const RESTART_AFTER_SEC = 24 * 3600;
 const WHITELIST_PER_TICK = 3;
 const WHITELIST_RETRY_MS = 30_000;
+const TURNOVER_BLOCK_MS = 30_000;
+const TURNOVER_RETRY_MS = 5_000;
+const TURNOVER_REJOIN_MS = 15_000;
+const MANUAL_MAP_WINDOW_MS = 5 * 60_000;
 const SCOREBOARD_FLUSH_MS = 30_000;
 const CASH_SAMPLE_MS = 60_000;
 const CASH_MAX_POINTS = 360;
@@ -66,6 +70,10 @@ export class Poller {
   lastSeenWrite = new Map<string, number>();
   whitelistTried = new Map<string, number>();
   gateTried = new Map<string, number>();
+  turnoverPending = new Set<string>();
+  turnoverBlocked = new Map<string, number>();
+  turnoverNextTry = new Map<string, number>();
+  manualMapUntil = 0;
   scoreSeen = new Map<string, ScoreSeen>();
   scorePending = new Map<string, MatchPlayerDelta>();
   lastScoreFlush = Date.now();
@@ -157,6 +165,7 @@ export class Poller {
       this.online = true;
       this.lastError = null;
       await this.enforcePendingBans();
+      await this.enforceTurnover(now);
       await this.enforceEntryGate(now);
       await this.enforceWhitelist(now);
     } catch (err) {
@@ -174,7 +183,7 @@ export class Poller {
   nextInterval(): number {
     if (Date.now() < this.rcon.holdUntil) return Math.max(this.rcon.holdUntil - Date.now(), WATCHED_MS);
     if (!this.online) return EMPTY_MS / 2;
-    if (this.watchers() > 0) return this.budgetedInterval(WATCHED_MS);
+    if (this.turnoverActive() || this.watchers() > 0) return this.budgetedInterval(WATCHED_MS);
     return this.players.length === 0 ? EMPTY_MS : IDLE_MS;
   }
 
@@ -331,6 +340,97 @@ export class Poller {
     }
   }
 
+  onMatchEnd(): void {
+    const now = Date.now();
+    const enabled = this.store.turnover().enabled;
+    if (now < this.manualMapUntil) {
+      this.manualMapUntil = 0;
+      if (enabled) this.emit('action', this.store.logAction('system', 'turnover_skip', this.feed.map, { why: 'manual' }, true));
+      return;
+    }
+    if (!enabled) return;
+    this.startTurnover(now);
+    if (!this.ticking) {
+      clearTimeout(this.timer);
+      this.tick();
+    }
+  }
+
+  startTurnover(now: number): void {
+    const ids = new Set(this.steamIds());
+    const streamers = this.store.discordLinksBySteam([...ids]);
+    for (const id of ids) {
+      if (streamers.has(id)) continue;
+      this.turnoverPending.add(id);
+      this.turnoverBlocked.set(id, now + TURNOVER_BLOCK_MS);
+    }
+    this.emit('action', this.store.logAction('system', 'turnover_start', null, { players: this.turnoverPending.size }, true));
+  }
+
+  expectManualMapChange() {
+    this.manualMapUntil = Date.now() + MANUAL_MAP_WINDOW_MS;
+  }
+
+  cancelManualMapChange() {
+    this.manualMapUntil = 0;
+  }
+
+  turnoverActive() {
+    return this.turnoverPending.size > 0 || this.turnoverBlocked.size > 0;
+  }
+
+  kickBudget(): number {
+    const limit = this.rcon.capabilities?.limits?.maxRequestsPerMinutePerIp;
+    return limit ? Math.max(WHITELIST_PER_TICK, Math.floor((limit * 2) / 3) - 5) : Infinity;
+  }
+
+  async enforceTurnover(now: number): Promise<void> {
+    const { enabled, message } = this.store.turnover();
+    if (!enabled) {
+      this.turnoverPending.clear();
+      this.turnoverBlocked.clear();
+    }
+    for (const [id, until] of this.turnoverBlocked) if (until <= now) this.turnoverBlocked.delete(id);
+    if (!this.inMapTransition(now)) {
+      const present = new Set(this.steamIds());
+      for (const id of this.turnoverPending) if (!present.has(id)) this.turnoverPending.delete(id);
+    }
+    if (!this.turnoverActive()) {
+      this.turnoverNextTry.clear();
+      return;
+    }
+    const streamers = this.store.discordLinksBySteam(this.steamIds());
+    const targets = this.players.filter((p): p is GamePlayer & { steamId: string } => !!p.steamId
+      && !streamers.has(p.steamId)
+      && (this.turnoverPending.has(p.steamId) || (this.turnoverBlocked.get(p.steamId) ?? 0) > now)
+      && now >= (this.turnoverNextTry.get(p.steamId) ?? 0)).slice(0, this.kickBudget());
+    const results = await Promise.allSettled(targets.map((p) => this.rcon.kick(p.steamId, message)));
+    results.forEach((r, i) => {
+      const p = targets[i];
+      const retry = this.turnoverNextTry.has(p.steamId);
+      this.turnoverNextTry.set(p.steamId, now + (r.status === 'fulfilled' ? TURNOVER_REJOIN_MS : TURNOVER_RETRY_MS));
+      if (r.status === 'fulfilled') {
+        if (this.turnoverPending.delete(p.steamId)) {
+          this.turnoverBlocked.set(p.steamId, Math.max(this.turnoverBlocked.get(p.steamId) ?? 0, now + TURNOVER_BLOCK_MS));
+        }
+        this.emit('action', this.store.logAction('system', 'turnover_kick', p.steamId, { name: p.name, reason: message }, true));
+      } else if (!retry) {
+        this.emit('action', this.store.logAction('system', 'turnover_kick', p.steamId, { name: p.name, reason: message }, false, errorMessage(r.reason)));
+      }
+    });
+  }
+
+  turnoverView() {
+    const now = Date.now();
+    const until = Math.max(0, ...this.turnoverBlocked.values());
+    return {
+      ...this.store.turnover(),
+      pending: this.turnoverPending.size,
+      blocked: [...this.turnoverBlocked.values()].filter((t) => t > now).length,
+      blockedUntil: until > now ? until : null,
+    };
+  }
+
   entryGateView() {
     const gate = this.store.entryGate();
     const streamers = this.store.discordLinksBySteam(this.steamIds());
@@ -453,6 +553,7 @@ export class Poller {
       nextMap: this.nextMapView(),
       rotationEnabled: this.rotation ? this.rotation.enabled !== false : null,
       entryGate: this.entryGateView(),
+      turnover: this.turnoverView(),
     };
   }
 

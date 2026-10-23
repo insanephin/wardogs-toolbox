@@ -16,7 +16,6 @@ class PanelView(LayoutView):
 
         container = Container(accent_colour=Colour.blurple())
         container.add_item(TextDisplay("## WARDOGS 인증"))
-        container.add_item(TextDisplay("웹사이트로 연동하셨을 경우에도 스트리머 인증을 위해 해당 패널에서 한번 더 부탁드립니다."))
         container.add_item(Separator())
         container.add_item(Section(
             TextDisplay("### 우측 버튼을 누르면 본인에게만 보이는 연동 안내가 나옵니다."),

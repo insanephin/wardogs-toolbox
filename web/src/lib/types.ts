@@ -98,6 +98,7 @@ export interface Live {
   gameFeed: { enabled: boolean; endpointCount: number; anyUnhealthy: boolean; endpoints?: FeedEndpoint[] } | null;
   matchStats: MatchStat[];
   entryGate: EntryGate;
+  turnover: Turnover;
   nextMap: { map: string; lighting: string | null; experiences: string[] } | null;
   rotationEnabled: boolean | null;
 }
@@ -119,6 +120,14 @@ export interface FeedEndpoint {
   droppedTotal: number;
   lastHttpStatus: number | null;
   lastSuccessAt: number | null;
+}
+
+export interface Turnover {
+  enabled: boolean;
+  message: string;
+  pending: number;
+  blocked: number;
+  blockedUntil: number | null;
 }
 
 export interface EntryGate {

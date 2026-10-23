@@ -22,13 +22,13 @@ const STEPS: { id: Provider; label: string }[] = [
 function discordResultText(r: string, via: string): { ok: boolean; text: string } {
   const who = STEPS.find((s) => s.id === via)?.label ?? '';
   switch (r) {
-    case 'proven': return { ok: true, text: `${who} 로그인을 확인했습니다. 디스코드로 돌아가 남은 로그인을 진행해주세요.` };
-    case 'reserved': return { ok: true, text: '스트리머 인증을 완료했습니다. 서버 접속 우선권이 적용되었습니다.' };
-    case 'queued': return { ok: true, text: '스트리머 인증을 완료했습니다. 게임 서버에 연결되는 대로 접속 우선권이 적용됩니다.' };
+    case 'proven': return { ok: true, text: `${who} 로그인을 확인했습니다. 디스코드로 돌아가 스팀 로그인을 진행해주세요.` };
+    case 'reserved': return { ok: true, text: '화이트리스트 등록을 완료했습니다. 서버 접속 우선권이 적용되었습니다.' };
+    case 'queued': return { ok: true, text: '화이트리스트 등록을 완료했습니다. 게임 서버에 연결되는 대로 접속 우선권이 적용됩니다.' };
     case 'taken': return { ok: false, text: `이 ${who} 계정은 이미 다른 계정과 연동되어 있습니다. 디스코드로 돌아가 확인해주세요.` };
     case 'cancelled': return { ok: false, text: `${who} 로그인이 취소되었습니다. 디스코드의 버튼을 다시 눌러주세요.` };
     case 'expired': return { ok: false, text: '링크가 만료되었습니다. 디스코드에서 다시 인증을 시작해주세요.' };
-    case 'unconfigured': return { ok: false, text: '스트리머 인증이 아직 설정되지 않았습니다. 관리자에게 문의해주세요.' };
+    case 'unconfigured': return { ok: false, text: '화이트리스트 등록이 아직 설정되지 않았습니다. 관리자에게 문의해주세요.' };
     default: return { ok: false, text: `${who} 계정을 확인하지 못했습니다. 디스코드의 버튼을 다시 눌러주세요.` };
   }
 }
@@ -79,7 +79,7 @@ export default function LinkPage() {
       <div className="notice-box">
         <strong>로그인 전 확인하세요</strong>
         <ul>
-          <li>이 페이지는 <b>일반 시청자용</b>입니다. 스트리머는 디스코드에서 치지직·스팀 연동(스트리머 인증)을 진행하세요.</li>
+          <li>이 페이지는 <b>일반 시청자용</b>입니다. 화이트리스트는 디스코드에서 스팀 로그인으로 등록하세요.</li>
           <li>스팀은 <b>워독스를 보유한 계정</b>으로 로그인하세요.</li>
           <li>한 번 등록하면 <b>직접 해제하거나 다른 계정으로 바꿀 수 없습니다.</b></li>
           <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href="/report" onClick={followLink}>신고하기</a>로 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
