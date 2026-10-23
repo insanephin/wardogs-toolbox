@@ -15,6 +15,9 @@ import { loadWeaponNames } from './weapons.ts';
 import { registerApi } from './api.ts';
 import { createLinking } from './link.ts';
 import { registerReports } from './report.ts';
+import { createDiscord } from './discord.ts';
+import { createSteamProfiles } from './steam.ts';
+import { createMapArt } from './mapart.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wd_session';
@@ -49,10 +52,13 @@ function createApp(config: Config) {
     factionOf: (id: string) => poller.factionOf(id),
     emit: (event, data) => hub.broadcast(event, data),
   });
-  poller = new Poller({ rcon, store, feed, emit: (e, d) => hub.broadcast(e, d), watchers: () => hub.size });
+  const steam = createSteamProfiles(config.steam.apiKey);
+  poller = new Poller({ rcon, store, feed, emit: (e, d) => hub.broadcast(e, d), watchers: () => hub.size, steam });
 
   const router = new Router();
-  registerApi(router, { rcon, store, poller, feed, hub, config });
+  const discord = createDiscord({ config, store, rcon, emit: (e, d) => hub.broadcast(e, d) });
+  registerApi(router, { rcon, store, poller, feed, hub, config, discord, steam });
+  discord.register(router);
   const clientIp = (req: IncomingMessage): string | undefined => {
     const cf = req.headers['cf-connecting-ip'];
     return config.trustProxy && typeof cf === 'string' && cf ? cf : req.socket.remoteAddress;
@@ -84,7 +90,7 @@ function createApp(config: Config) {
       endPanelSession(previous);
       return cookie('', 0);
     },
-  }, () => poller.serverId);
+  }, () => poller.serverId, discord);
   linking.register(router);
   registerReports(router, { store, poller, hub, configured: linking.configured, accounts: linking.accounts });
 
@@ -93,6 +99,8 @@ function createApp(config: Config) {
     res.setHeader('Set-Cookie', cookie('', 0));
     return { ok: true };
   });
+  const mapArt = createMapArt(config.mapArtUrl);
+  router.add('GET', '/api/map-art', { role: 'viewer', stream: true }, ({ query, res }) => mapArt.serve(query, res));
   router.add('GET', '/api/me', { role: 'viewer' }, ({ session }) => ({ name: session.name, role: session.role }));
   router.add('GET', '/api/stream', { role: 'viewer', stream: true }, ({ req, res, session, sessionId }) => {
     const client = hub.open(req, res, session, sessionId);
@@ -167,7 +175,7 @@ function createApp(config: Config) {
 
   const server = createServer((req, res) => handle(req, res).catch(onError(res)));
 
-  return { server, auth, poller };
+  return { server, auth, poller, discord };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -179,6 +187,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (!config.chzzk.clientId || !config.chzzk.clientSecret || !config.chzzk.redirectUrl) {
     console.warn('[경고] 치지직 앱 설정이 비어 있어 관리자 패널에 로그인할 수 없습니다.');
   }
+  if (config.discord.botSecret && !app.discord.configured) console.warn('[경고] 디스코드 봇 인증을 쓰려면 PUBLIC_URL(또는 CHZZK_REDIRECT_URL)이 필요합니다.');
   if (config.host !== '127.0.0.1' && config.host !== 'localhost' && !config.cookieSecure) {
     console.warn(`[안내] DASH_HOST=${config.host}. 이 포트를 다른 컴퓨터에 공개한다면 TLS 리버스 프록시 뒤에 두고 COOKIE_SECURE=true를 설정하세요.`);
   }
@@ -189,6 +198,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
   if (config.adminAllowIps.length) console.log(`관리자 허용 IP: ${config.adminAllowIps.join(', ')}`);
   app.poller.start();
+  app.discord.start();
   const shutdown = () => {
     app.poller.stop();
     app.server.close();

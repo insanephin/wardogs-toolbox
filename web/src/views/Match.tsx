@@ -4,10 +4,10 @@ import type { Catalog, CatalogItem, MapOptions, OrError, Rotation as RotationDat
 import { useStore, getState, can, serves } from '../lib/store.ts';
 import { api, run, errorMessage } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
-import { Card, Empty } from '../components/common.tsx';
+import { Card, Empty, MapArt } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
 import { IconButton } from '../components/iconButton.tsx';
-import { faArrowUp, faArrowDown, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faArrowUp, faArrowDown, faTrash, faForwardStep } from '@fortawesome/free-solid-svg-icons';
 
 const pick = (list: CatalogItem[], want: string | undefined): string => (want && list.some((x) => x.id === want) ? want : list[0]?.id ?? '');
 
@@ -34,7 +34,7 @@ export default function Match() {
           <div className="card-body stack">
             {catalog?.error ? <Empty>카탈로그를 불러오지 못했습니다: {catalog.error}</Empty> : ready ? (
               <>
-                <ChangeMap catalog={ready} admin={admin} onRotationChange={bumpRotation} />
+                <ChangeMap catalog={ready} admin={admin} rev={rotationRev} onRotationChange={bumpRotation} />
                 <LiveLighting catalog={ready} admin={admin} />
               </>
             ) : null}
@@ -44,12 +44,12 @@ export default function Match() {
           <div className="card-body stack">{ready ? <Controls admin={admin} /> : null}</div>
         </Card>
       </div>
-      <Card title="맵 로테이션"><div className="card-body">{ready ? <Rotation rev={rotationRev} admin={admin} onChange={bumpRotation} /> : null}</div></Card>
+      <Card title="맵 로테이션"><div className="card-body stack">{ready ? <Rotation rev={rotationRev} admin={admin} onChange={bumpRotation} /> : null}</div></Card>
     </>
   );
 }
 
-function ChangeMap({ catalog, admin, onRotationChange }: { catalog: Catalog; admin: boolean; onRotationChange: () => void }) {
+function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog; admin: boolean; rev: number; onRotationChange: () => void }) {
   const caps = useStore((s) => s.caps);
   const canEditRotation = admin && (caps?.features?.configDocument ?? true);
   const [map, setMap] = useState(() => pick(catalog.maps, getState().live?.status?.map));
@@ -60,7 +60,7 @@ function ChangeMap({ catalog, admin, onRotationChange }: { catalog: Catalog; adm
   const [rotationOn, setRotationOn] = useState<boolean | null>(null);
   useEffect(() => {
     api<RotationData>('GET', '/api/rotation').then((r) => setRotationOn(!!r.enabled), () => setRotationOn(null));
-  }, []);
+  }, [rev]);
 
   useEffect(() => {
     let stale = false;
@@ -103,6 +103,7 @@ function ChangeMap({ catalog, admin, onRotationChange }: { catalog: Catalog; adm
 
   return (
     <form className="stack" onSubmit={onSubmit}>
+      <MapArt map={map} lighting={lighting} variant="720" />
       <label className="field">
         <span className="field-label">맵</span>
         <select aria-label="맵" value={map} onChange={(e) => setMap(e.target.value)}>
@@ -278,12 +279,33 @@ function Rotation({ rev, admin, onChange }: { rev: number; admin: boolean; onCha
     }
   };
 
+  const jump = async (i: number, e: { map: string }) => {
+    if (await confirmAction('로테이션 이동', `${i + 1}번 ${e.map} 항목을 다음 맵으로 정하고 지금 매치를 끝냅니다. 종료 화면이 지나면 그 맵으로 이동합니다.`, { confirm: '이동' })) {
+      await edit('로테이션 이동', 'POST', `/api/rotation/${i}/jump`);
+    }
+  };
+
   if (!r) return null;
   if (r.error !== undefined) return <Empty>로테이션을 불러오지 못했습니다: {r.error}</Empty>;
   const entries = r.entries || [];
+  const random = r.mode === 'random';
   return (
     <>
-      <p className="muted small">{`${r.enabled ? '사용 중' : '꺼짐'} · ${r.mode === 'random' ? '무작위' : '순서대로'}. 편집은 설정 문서의 RotationEntries를 고쳐 적용하며, 다음 맵 전환부터 반영됩니다.`}</p>
+      <div className="row-wrap">
+        <div className="seg" role="radiogroup" aria-label="로테이션 사용">
+          <button type="button" role="radio" aria-checked={!!r.enabled} className={r.enabled ? 'on' : ''} disabled={!editable || busy || r.enabled}
+            onClick={() => edit('로테이션 켜기', 'PUT', '/api/rotation/settings', { enabled: true })}>사용</button>
+          <button type="button" role="radio" aria-checked={!r.enabled} className={r.enabled ? '' : 'on'} disabled={!editable || busy || !r.enabled}
+            onClick={() => edit('로테이션 끄기', 'PUT', '/api/rotation/settings', { enabled: false })}>끄기</button>
+        </div>
+        <div className="seg" role="radiogroup" aria-label="로테이션 순서">
+          <button type="button" role="radio" aria-checked={!random} className={random ? '' : 'on'} disabled={!editable || busy || !random}
+            onClick={() => edit('로테이션 순서', 'PUT', '/api/rotation/settings', { mode: 'ordered' })}>순서대로</button>
+          <button type="button" role="radio" aria-checked={random} className={random ? 'on' : ''} disabled={!editable || busy || random}
+            onClick={() => edit('로테이션 순서', 'PUT', '/api/rotation/settings', { mode: 'random' })}>무작위</button>
+        </div>
+      </div>
+      <p className="muted small">{`편집은 설정 문서를 고쳐 적용하며, 다음 맵 전환부터 반영됩니다.${r.enabled ? '' : ' 꺼져 있으면 매치가 끝날 때 지금 맵을 다시 불러옵니다.'}`}</p>
       <div className="table-wrap">
         <table className="table">
           <thead><tr><th className="num">#</th><th>맵</th><th>모드</th><th>조명</th><th>상태</th>{editable ? <th aria-label="편집" /> : null}</tr></thead>
@@ -291,7 +313,7 @@ function Rotation({ rev, admin, onChange }: { rev: number; admin: boolean; onCha
             {entries.map((e, i) => (
               <tr key={i} className={e.status === 'now' ? 'row-now' : ''}>
                 <td className="num">{(e.index ?? i) + 1}</td>
-                <td>{e.map}</td>
+                <td><span className="inline-row"><MapArt map={e.map} lighting={e.lighting} variant="wide" />{e.map}</span></td>
                 <td>{(e.experiences || []).join(', ')}</td>
                 <td>{e.lighting || '—'}</td>
                 <td>
@@ -300,6 +322,8 @@ function Rotation({ rev, admin, onChange }: { rev: number; admin: boolean; onCha
                 </td>
                 {editable ? (
                   <td className="nowrap">
+                    <IconButton icon={faForwardStep} label={!r.enabled ? '로테이션이 꺼져 있어 이동할 수 없습니다' : e.denied ? '거부된 항목' : '이 맵으로 이동'}
+                      disabled={busy || !r.enabled || e.status === 'now' || !!e.denied} onClick={() => jump(i, e)} />
                     <IconButton icon={faArrowUp} label="위로" disabled={busy || i === 0}
                       onClick={() => edit('로테이션 이동', 'POST', `/api/rotation/${i}/move`, { to: i - 1 })} />
                     <IconButton icon={faArrowDown} label="아래로" disabled={busy || i === entries.length - 1}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { LinkRow, OrError, Whitelist, WhitelistBan, WhitelistMode } from '../lib/types.ts';
+import type { LinkRow, OrError, Streamer, Whitelist, WhitelistBan, WhitelistMode } from '../lib/types.ts';
 import { useStore, can } from '../lib/store.ts';
 import { api, run, errorMessage } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
@@ -13,14 +13,16 @@ import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
 const WHITELIST_LABELS: Record<WhitelistMode, string> = { off: '꺼짐', kick: '미연동 킥', ban: '미연동 밴' };
 const MODE_HELP: Record<WhitelistMode, string> = {
   off: '누구나 접속할 수 있습니다.',
-  kick: '스팀과 치지직을 모두 연동하지 않은 플레이어를 입장하자마자 킥합니다. 연동 후 바로 다시 들어올 수 있습니다.',
-  ban: '스팀과 치지직을 모두 연동하지 않은 플레이어를 밴합니다. 안내 후 연동할 경우 자동으로 밴이 풀립니다.',
+  kick: '웹 연동(스팀+치지직)도 스트리머 인증(디스코드)도 하지 않은 플레이어를 입장하자마자 킥합니다. 인증 후 바로 다시 들어올 수 있습니다.',
+  ban: '웹 연동(스팀+치지직)도 스트리머 인증(디스코드)도 하지 않은 플레이어를 밴합니다. 인증하면 자동으로 밴이 풀립니다.',
 };
 
 export default function Links() {
   const [links, setLinks] = useState<OrError<LinkRow[]> | null>(null);
   const [wl, setWl] = useState<Whitelist | null>(null);
+  const [streamers, setStreamers] = useState<OrError<Streamer[]> | null>(null);
   const [search, setSearch] = useState('');
+  const [tab, setTab] = useState<'viewer' | 'streamer'>('viewer');
 
   const load = useCallback(async () => {
     try {
@@ -30,32 +32,47 @@ export default function Links() {
     } catch (err) {
       setLinks({ error: errorMessage(err) });
     }
+    api<Streamer[]>('GET', '/api/streamers').then(setStreamers, (err) => setStreamers({ error: errorMessage(err) }));
   }, []);
   useEffect(() => {
     load();
   }, [load]);
-  useOnAction((a) => (a.action.startsWith('whitelist_') || a.action === 'unlink') && load());
+  useOnAction((a) => (a.action.startsWith('whitelist_') || a.action.startsWith('reserved_') || a.action === 'unlink' || a.action === 'streamer_remove') && load());
 
   const q = search.trim().toLowerCase();
-  const all = Array.isArray(links) ? links : [];
-  const rows = all.filter((l) => !q || [l.steamId, l.steamName, l.lastName, l.chzzkName, l.chzzkChannelId]
-    .some((v) => v && String(v).toLowerCase().includes(q)));
+  const hit = (...vals: (string | null | undefined)[]) => !q || vals.some((v) => v && v.toLowerCase().includes(q));
+  const streamerList = Array.isArray(streamers) ? streamers : [];
+  const streamerIds = new Set(streamerList.map((s) => s.steamId));
+  const viewers = (Array.isArray(links) ? links : []).filter((l) => !streamerIds.has(l.steamId));
+  const viewerRows = viewers.filter((l) => hit(l.steamId, l.steamName, l.lastName, l.chzzkName, l.chzzkChannelId));
+  const streamerRows = streamerList.filter((s) => hit(s.steamId, s.steamName, s.chzzkName, s.chzzkChannelId, s.discordName, s.discordId));
+  const loadError = links && !Array.isArray(links) ? links.error : streamers && !Array.isArray(streamers) ? streamers.error : null;
 
   return (
     <div className="grid-main">
       <Card title="연동된 계정" extra={<IconButton icon={faRotateRight} label="새로고침" onClick={load} />}>
         <div className="toolbar">
-          <input type="search" placeholder="스팀·치지직 이름 또는 ID" aria-label="연동 검색" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <div className="seg" role="tablist" aria-label="연동 종류">
+            <button type="button" role="tab" aria-selected={tab === 'viewer'} className={tab === 'viewer' ? 'on' : ''} onClick={() => setTab('viewer')}>{`시청자 ${viewers.length}`}</button>
+            <button type="button" role="tab" aria-selected={tab === 'streamer'} className={tab === 'streamer' ? 'on' : ''} onClick={() => setTab('streamer')}>{`스트리머 ${streamerList.length}`}</button>
+          </div>
+          <input type="search" placeholder={tab === 'viewer' ? '스팀·치지직 이름 또는 ID' : '디스코드·스팀·치지직 이름 또는 ID'} aria-label="연동 검색" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         <div className="card-body"><div className="table-wrap">
-          {!links ? <Empty><Spinner /></Empty>
-            : links.error ? <Empty>불러오지 못했습니다: {links.error}</Empty>
-              : !rows.length ? <Empty>{all.length ? '조건에 맞는 계정이 없습니다.' : '아직 연동한 사람이 없습니다. 플레이어에게 연동 페이지(/)를 안내해 주세요.'}</Empty>
-                : <LinkTable rows={rows} onChanged={load} />}
+          {!links || !streamers ? <Empty><Spinner /></Empty>
+            : loadError ? <Empty>불러오지 못했습니다: {loadError}</Empty>
+              : tab === 'viewer'
+                ? (!viewerRows.length ? <Empty>{viewers.length ? '조건에 맞는 계정이 없습니다.' : '아직 연동한 시청자가 없습니다. 연동 페이지(/)를 안내해 주세요.'}</Empty>
+                  : <LinkTable rows={viewerRows} onChanged={load} />)
+                : (!streamerRows.length ? <Empty>{streamerList.length ? '조건에 맞는 스트리머가 없습니다.' : '아직 인증한 스트리머가 없습니다. 디스코드 패널을 안내해 주세요.'}</Empty>
+                  : <StreamerTable rows={streamerRows} onChanged={load} />)}
         </div></div>
-        <p className="card-foot muted small">플레이어가 <a href="/" className="link">연동 페이지</a>에서 치지직과 스팀에 모두 로그인해야 연동됩니다.</p>
+        <p className="card-foot muted small">{tab === 'viewer'
+          ? <>시청자는 <a href="/" className="link">연동 페이지</a>에서 치지직과 스팀에 모두 로그인해야 연동됩니다.</>
+          : '스트리머는 디스코드에서 치지직·스팀을 연동하며, 모두 예약 슬롯에 자동으로 들어갑니다.'}</p>
       </Card>
       <div className="stack">
+        <Card title="스트리머 우선 입장"><EntryGateForm /></Card>
         <Card title="화이트리스트">{wl ? <WhitelistForm wl={wl} onSaved={load} /> : <Empty><Spinner /></Empty>}</Card>
         <Card title="미등록 유저 밴"><div className="card-body"><WhitelistBans list={wl?.bans} /></div></Card>
       </div>
@@ -96,11 +113,106 @@ function LinkTable({ rows, onChanged }: { rows: LinkRow[]; onChanged: () => void
   );
 }
 
+function EntryGateForm() {
+  const gate = useStore((s) => s.live)?.entryGate;
+  const players = useStore((s) => s.live)?.players || [];
+  const [threshold, setThreshold] = useState('5');
+  const [minutes, setMinutes] = useState('10');
+  const [message, setMessage] = useState('');
+  const editable = can('admin');
+  useEffect(() => {
+    if (!gate) return;
+    setThreshold(String(gate.threshold));
+    setMessage((m) => m || gate.message);
+  }, [gate?.threshold, gate?.message]);
+
+  if (!gate) return <Empty><Spinner /></Empty>;
+  const viewersOnline = players.filter((p) => p.steamId && !p.streamer).length;
+
+  const start = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!gate.active && viewersOnline > 0 && !(await confirmAction('입장 제한 시작',
+      `지금 접속 중인 스트리머가 아닌 플레이어 ${viewersOnline}명이 바로 킥됩니다.`, { confirm: '시작' }))) return;
+    await run('입장 제한', 'PUT', '/api/entry-gate', { active: true, threshold: Number(threshold), minutes: Number(minutes) || 0, message: message.trim() });
+  };
+  const stop = () => run('입장 제한 해제', 'PUT', '/api/entry-gate', { active: false });
+
+  return (
+    <form className="card-body stack" onSubmit={start}>
+      {gate.active ? (
+        <div className="banner banner-warn" role="status">
+          {`입장 제한 중 · 스트리머 ${gate.streamersOnline}/${gate.threshold}명 접속${gate.openAt ? ` · ${fmtTime(gate.openAt)}에 자동 해제` : ''}`}
+        </div>
+      ) : <p className="muted small">{`꺼짐 · 지금 접속 중인 스트리머 ${gate.streamersOnline}명`}</p>}
+      <p className="muted small">켜 두면 스트리머가 아닌 플레이어는 입장하자마자 킥됩니다. 스트리머가 정한 인원만큼 들어오거나 시간이 지나면 자동으로 풀립니다.</p>
+      <div className="toolbar">
+        <label className="field">
+          <span className="field-label"><span>스트리머 인원</span></span>
+          <input type="number" min={1} max={100} value={threshold} disabled={!editable} onChange={(e) => setThreshold(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="field-label"><span>자동 해제 (분, 0은 끄기)</span></span>
+          <input type="number" min={0} max={180} value={minutes} disabled={!editable} onChange={(e) => setMinutes(e.target.value)} />
+        </label>
+      </div>
+      <label className="field">
+        <span className="field-label"><span>안내 문구 (킥 사유로 보임)</span><span>{`${charCount(message)}/200`}</span></span>
+        <textarea rows={2} maxLength={200} value={message} disabled={!editable} onChange={(e) => setMessage(e.target.value)} />
+      </label>
+      {editable ? (
+        <div className="toolbar">
+          <button className="btn btn-primary" type="submit" disabled={!message.trim() || !(Number(threshold) >= 1)}>{gate.active ? '설정 변경' : '입장 제한 시작'}</button>
+          {gate.active ? <button className="btn" type="button" onClick={stop}>지금 열기</button> : null}
+        </div>
+      ) : <p className="muted small">변경은 관리자만 할 수 있습니다.</p>}
+    </form>
+  );
+}
+
+function StreamerTable({ rows, onChanged }: { rows: Streamer[]; onChanged: () => void }) {
+  const online = new Set((useStore((s) => s.live)?.players || []).map((p) => p.steamId));
+  const mod = can('mod');
+  const remove = async (s: Streamer) => {
+    const name = s.discordName || s.discordId;
+    if (!(await confirmAction('스트리머 해제', `${name}의 스트리머 인증을 해제하고 예약 슬롯에서 뺍니다. 치지직·스팀 연동은 남아 시청자로 바뀝니다.`, { confirm: '해제' }))) return;
+    if (await run('스트리머 해제', 'DELETE', `/api/streamers/${s.discordId}`)) onChanged();
+  };
+  return (
+    <table className="table">
+      <thead><tr><th>디스코드</th><th>스팀</th><th>치지직</th><th>인증 시각</th>{mod ? <th /> : null}</tr></thead>
+      <tbody>
+        {rows.map((s) => (
+          <tr key={s.discordId}>
+            <td>
+              <div className="pname">
+                {s.discordName || s.discordId}
+                {online.has(s.steamId) ? <> <span className="tag tag-hs">접속 중</span></> : null}
+              </div>
+              {s.lastError ? <div className="small danger">{`예약 슬롯 등록 재시도 중: ${s.lastError}`}</div> : null}
+            </td>
+            <td>
+              <div>{s.steamName ?? '—'}</div>
+              <div className="mono muted small">{s.steamId}</div>
+            </td>
+            <td>
+              {s.chzzkChannelId
+                ? <a className="link" href={`https://chzzk.naver.com/${s.chzzkChannelId}`} target="_blank" rel="noopener noreferrer">{s.chzzkName || s.chzzkChannelId}</a>
+                : <span className="tag tag-danger">미연동</span>}
+            </td>
+            <td className="muted small nowrap">{fmtTime(s.linkedAt)}</td>
+            {mod ? <td className="nowrap"><button className="btn btn-sm btn-danger-outline" type="button" onClick={() => remove(s)}>스트리머 해제</button></td> : null}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function WhitelistForm({ wl, onSaved }: { wl: Whitelist; onSaved: () => void }) {
   const [mode, setMode] = useState(wl.mode);
   const [message, setMessage] = useState(wl.message);
   const editable = can('admin');
-  const unlinkedOnline = (useStore((s) => s.live)?.players || []).filter((p) => p.steamId && !p.link).length;
+  const unlinkedOnline = (useStore((s) => s.live)?.players || []).filter((p) => p.steamId && !p.link && !p.streamer).length;
   const dirty = mode !== wl.mode || message !== wl.message;
 
   const save = async (e: FormEvent) => {

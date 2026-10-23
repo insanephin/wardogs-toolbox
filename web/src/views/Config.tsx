@@ -95,6 +95,7 @@ export default function Config() {
             <button className="btn" type="button" onClick={load}>불러오기</button>
             <button className="btn" type="button" disabled={busy} onClick={validate}>검증 (드라이런)</button>
             <button className="btn btn-danger" type="button" disabled={!canApply} onClick={apply}>적용</button>
+            <button className="btn" type="button" disabled={!text} onClick={() => download(text)}>.ini 다운로드</button>
           </div>
           <div className="card-body">
             <textarea className="code-editor" spellCheck={false} aria-label="ServerSettings.ini" wrap="off" value={text} onChange={(e) => setText(e.target.value)} />
@@ -114,6 +115,15 @@ export default function Config() {
       </div>
     </>
   );
+}
+
+function download(text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ServerSettings.ini';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function Locked({ doc }: { doc: ConfigDoc | null }) {

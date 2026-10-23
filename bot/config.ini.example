@@ -1,0 +1,8 @@
+[bot]
+token =
+prefix = !
+guild_id =
+
+[dashboard]
+url = http://dashboard:8080
+secret =

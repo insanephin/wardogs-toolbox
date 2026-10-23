@@ -4,3 +4,5 @@ data/*.db
 data/*.db-*
 data/*.db.*
 dist/
+bot/config.ini
+__pycache__/

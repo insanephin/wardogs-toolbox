@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { Action, Capabilities, Engagement, FeedEvent, Kill, Live, Me, Report, Role } from './types.ts';
+import type { Action, CashHistory, Capabilities, Engagement, FeedEvent, Kill, Live, Me, Report, Role } from './types.ts';
 
 const ROLE_RANK: Record<Role, number> = { viewer: 1, mod: 2, admin: 3 };
 
@@ -14,6 +14,7 @@ interface State {
   matchEvents: FeedEvent[];
   lastAction: Action | null;
   lastReport: Report | null;
+  cash: CashHistory | null;
 }
 
 let state: State = {
@@ -27,6 +28,7 @@ let state: State = {
   matchEvents: [],
   lastAction: null,
   lastReport: null,
+  cash: null,
 };
 const listeners = new Set<() => void>();
 

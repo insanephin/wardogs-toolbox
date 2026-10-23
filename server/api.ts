@@ -1,15 +1,17 @@
-import { timingSafeEqual } from 'node:crypto';
 import { hasRole } from './auth.ts';
-import { HttpError, readBody, errorMessage, requireText } from './http.ts';
+import { HttpError, readBody, errorMessage, requireText, tokenMatches } from './http.ts';
 import type { Router, Handler, SseHub, Body } from './http.ts';
 import { WHITELIST_MODES } from './store.ts';
 import type { Store, WhitelistMode, FeedRequest } from './store.ts';
 import type { Role, Session } from './auth.ts';
 import type { RconClient, RconError, MapSelection } from './rcon.ts';
-import type { RotationSelection } from './inidoc.ts';
+import type { RotationSelection, RotationSettings } from './inidoc.ts';
 import type { Poller } from './poller.ts';
 import type { FeedProcessor, FeedBatch } from './feed.ts';
 import type { Config } from './config.ts';
+import type { Discord } from './discord.ts';
+import type { SteamProfiles } from './steam.ts';
+import { SETTING_FIELDS, readSettings, writeSettings, lockedSettings, appliesSettings, presetValues } from './settings.ts';
 import type { IncomingMessage } from 'node:http';
 
 const MAX_CHAT = 256;
@@ -32,14 +34,9 @@ function readSelection(body: Body): MapSelection {
 
 const selectionForRotation = (sel: MapSelection): RotationSelection => ({ ...sel, alternator: sel.zoneAlternator });
 
-function tokenMatches(given: string, expected: string): boolean {
-  if (!expected) return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
 interface ApiContext {
+  discord: Discord;
+  steam: SteamProfiles;
   rcon: RconClient;
   store: Store;
   poller: Poller;
@@ -49,12 +46,14 @@ interface ApiContext {
 }
 
 export function registerApi(router: Router, ctx: ApiContext): void {
-  const { rcon, store, poller, feed, hub, config } = ctx;
+  const { rcon, store, poller, feed, hub, config, discord, steam } = ctx;
   const catalogCache: { at: number; data: Awaited<ReturnType<RconClient['catalog']>> | null } = { at: 0, data: null };
 
+  const ROTATION_ACTIONS = new Set(['rotation_add', 'rotation_set_next', 'rotation_move', 'rotation_remove', 'rotation_settings', 'rotation_jump', 'change_map', 'end_match', 'settings_update', 'config_apply']);
   const act = async <T>(session: Session, action: string, target: string | null, detail: unknown, fn: () => Promise<T>): Promise<T> => {
     try {
       const result = await fn();
+      if (ROTATION_ACTIONS.has(action)) poller.refreshRotation();
       hub.broadcast('action', store.logAction(session.name, action, target, detail, true));
       return result;
     } catch (err) {
@@ -81,6 +80,12 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     return store.weaponStats({ since: Date.now() - hours * 3600_000 });
   });
   route('GET', '/api/match-events', 'viewer', () => store.recentMatchEvents(100));
+  route('GET', '/api/cash-history', 'viewer', () => poller.cash);
+  route('GET', '/api/steam/profiles', 'viewer', ({ query }) => {
+    const ids = [...new Set((query.get('ids') || '').split(',').map((s) => s.trim()).filter(Boolean))];
+    if (ids.length > 200 || !ids.every((id) => STEAM_ID.test(id))) throw new HttpError(400, 'bad_steam_id', 'SteamID64 목록이 올바르지 않습니다 (최대 200개)');
+    return steam.lookup(ids);
+  });
   route('GET', '/api/players/:steamId/profile', 'viewer', ({ params }) => store.playerProfile(requireSteamId(params.steamId)));
 
   route('POST', '/api/players/:steamId/message', 'mod', async ({ params, body, session }) => {
@@ -169,6 +174,38 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     });
   });
 
+  route('GET', '/api/streamers', 'viewer', () => store.discordLinks());
+
+  route('DELETE', '/api/streamers/:discordId', 'mod', ({ params, session }) => {
+    const link = store.discordLink('discord', params.discordId);
+    if (!link) throw new HttpError(404, 'not_found', '인증된 스트리머가 아닙니다');
+    return act(session, 'streamer_remove', link.steamId, { discordId: link.discordId, discord: link.discordName },
+      () => discord.revoke(link.discordId));
+  });
+
+  route('GET', '/api/entry-gate', 'viewer', () => poller.entryGateView());
+
+  route('PUT', '/api/entry-gate', 'admin', ({ body, session }) => {
+    const prev = store.entryGate();
+    if (!body.active) {
+      return act(session, 'entry_gate_stop', null, null, async () => {
+        store.setEntryGate({ ...prev, active: false, startedAt: null, openAt: null });
+        return poller.entryGateView();
+      });
+    }
+    const threshold = Number(body.threshold);
+    if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) throw new HttpError(400, 'bad_threshold', '스트리머 인원은 1~100명입니다');
+    const minutes = Number(body.minutes ?? 0);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 180) throw new HttpError(400, 'bad_minutes', '자동 해제 시간은 0~180분입니다 (0은 끄기)');
+    const message = requireText(body.message, '안내 문구', MAX_REASON);
+    const now = Date.now();
+    return act(session, 'entry_gate_start', null, { threshold, minutes, message }, async () => {
+      store.setEntryGate({ active: true, threshold, message, startedAt: prev.active ? prev.startedAt : now, openAt: minutes ? now + minutes * 60_000 : null });
+      poller.nudge();
+      return poller.entryGateView();
+    });
+  });
+
   route('GET', '/api/whitelist', 'viewer', () => ({ ...store.whitelist(), bans: store.whitelistBans() }));
 
   route('PUT', '/api/whitelist', 'admin', ({ body, session }) => {
@@ -186,14 +223,20 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     const live = await rcon.reservedSlots();
     let inDoc = null;
     if (hasRole(session, 'admin')) inDoc = await rcon.reservedInDoc().catch(() => null);
-    return { live, inDoc, liveRoutes: rcon.features.reservedRoutes };
+    return { live, inDoc, liveRoutes: rcon.features.reservedRoutes, streamers: store.discordLinks().map((l) => l.steamId) };
   });
 
   const editReserved = (session: Session, id: string, present: boolean) =>
     act(session, present ? 'reserved_add' : 'reserved_remove', id, { via: rcon.features.reservedRoutes ? 'route' : 'config' },
       () => rcon.setReserved(id, present));
   route('POST', '/api/reserved', 'admin', ({ body, session }) => editReserved(session, requireSteamId(String(body.steamId ?? '').trim()), true));
-  route('DELETE', '/api/reserved/:steamId', 'admin', ({ params, session }) => editReserved(session, requireSteamId(params.steamId), false));
+  route('DELETE', '/api/reserved/:steamId', 'admin', ({ params, session }) => {
+    const id = requireSteamId(params.steamId);
+    if (store.discordLink('steam', id)) {
+      throw new HttpError(409, 'streamer_slot', '인증된 스트리머의 예약 슬롯입니다. 빼려면 연동 탭에서 스트리머를 해제하세요');
+    }
+    return editReserved(session, id, false);
+  });
 
   route('GET', '/api/rotation', 'viewer', () => rcon.rotation());
 
@@ -243,6 +286,28 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     const to = rotationIndex(body.to, '옮길 자리');
     return act(session, 'rotation_move', String(index + 1), { to: to + 1 }, () => rcon.moveRotationEntry(index, to));
   });
+  route('PUT', '/api/rotation/settings', 'admin', ({ body, session }) => {
+    requireConfigWrite();
+    const settings: RotationSettings = {};
+    if (body.enabled !== undefined) settings.enabled = !!body.enabled;
+    if (body.mode !== undefined) {
+      if (body.mode !== 'ordered' && body.mode !== 'random') throw new HttpError(400, 'bad_mode', '순서는 ordered 또는 random입니다');
+      settings.mode = body.mode;
+    }
+    if (!Object.keys(settings).length) throw new HttpError(400, 'missing_field', '바꿀 값이 없습니다');
+    return act(session, 'rotation_settings', null, settings, () => rcon.setRotationSettings(settings));
+  });
+  route('POST', '/api/rotation/:index/jump', 'admin', async ({ params, session }) => {
+    requireConfigWrite();
+    const index = rotationIndex(params.index);
+    const live = await rcon.rotation();
+    const entry = (live.entries || [])[index];
+    if (!entry) throw new HttpError(400, 'bad_index', `로테이션 ${index + 1}번 항목이 없습니다`);
+    if (entry.status === 'now') throw new HttpError(409, 'already_now', '이미 진행 중인 맵입니다. 다시 불러오려면 매치 재시작을 쓰세요');
+    if (entry.denied) throw new HttpError(409, 'denied_entry', '서버가 거부한 항목이라 이동할 수 없습니다');
+    if (live.enabled === false) throw new HttpError(409, 'rotation_off', '로테이션이 꺼져 있으면 매치가 끝나도 지금 맵을 다시 불러옵니다. 먼저 로테이션을 켜세요');
+    return act(session, 'rotation_jump', String(index + 1), { map: entry.map }, () => rcon.jumpToRotation(index));
+  });
   route('DELETE', '/api/rotation/:index', 'admin', ({ params, session }) => {
     requireConfigWrite();
     const index = rotationIndex(params.index);
@@ -266,6 +331,14 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     return act(session, 'score_period', `${value}초`, null, () => rcon.setScorePeriod(value));
   });
 
+  route('GET', '/api/sponsor', 'viewer', async () => ({ url: await rcon.sponsor() }));
+  route('PUT', '/api/sponsor', 'admin', ({ body, session }) => {
+    requireConfigWrite();
+    const url = requireText(body.url, '이미지 주소', 300, { optional: true });
+    if (url && URL.parse(url)?.protocol !== 'https:') throw new HttpError(400, 'bad_url', '이미지 주소는 https:// 로 시작해야 합니다');
+    return act(session, 'sponsor_update', null, { url }, () => rcon.setSponsor(url));
+  });
+
   route('GET', '/api/config', 'admin', () => rcon.config());
 
   route('POST', '/api/config/validate', 'admin', ({ body }) => {
@@ -282,6 +355,60 @@ export function registerApi(router: Router, ctx: ApiContext): void {
         ? '다른 관리자가 먼저 수정했습니다. 다시 불러온 뒤 적용하세요.'
         : '서버가 값을 거부해 아무것도 적용되지 않았습니다.', result));
       return result;
+    });
+  });
+
+  route('GET', '/api/settings', 'admin', async () => {
+    const doc = await rcon.config();
+    return {
+      revision: doc.revision,
+      writable: doc.writable && (!rcon.capabilities || rcon.features.configDocument),
+      fields: SETTING_FIELDS,
+      values: readSettings(doc.text),
+      locked: lockedSettings(doc.sections),
+      applies: appliesSettings(doc.sections),
+      presets: store.configPresets(),
+    };
+  });
+
+  route('PUT', '/api/settings', 'admin', ({ body, session }) => {
+    requireConfigWrite();
+    if (!body.revision) throw new HttpError(400, 'missing_revision', '불러온 리비전 없이 적용할 수 없습니다. 먼저 설정을 불러오세요.');
+    if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) throw new HttpError(400, 'missing_field', '바꿀 값이 없습니다');
+    writeSettings('', body.values);
+    return act(session, 'settings_update', null, { keys: Object.keys(body.values) }, async () => {
+      const live = await rcon.config();
+      const { text, keys } = writeSettings(live.text, body.values);
+      if (!keys.length) return { ok: true, status: 200, message: '바뀐 값이 없습니다.' };
+      const result = await rcon.applyConfig(text, { revision: body.revision });
+      if (result.ok === false) {
+        throw new HttpError(result.status, 'config_rejected', result.status === 412
+          ? '다른 관리자가 먼저 수정했습니다. 다시 불러온 뒤 적용하세요.'
+          : '서버가 값을 거부해 아무것도 적용되지 않았습니다.', result);
+      }
+      return result;
+    });
+  });
+
+  const presetName = (v: string) => requireText(v, '프리셋 이름', 40);
+  route('PUT', '/api/settings/presets/:name', 'admin', ({ params, body, session }) => {
+    const name = presetName(params.name);
+    const values = presetValues(body.values && typeof body.values === 'object' ? body.values : {});
+    if (!Object.keys(values).length) throw new HttpError(400, 'missing_field', '저장할 값이 없습니다');
+    return act(session, 'preset_save', name, null, async () => {
+      const list = store.configPresets().filter((p) => p.name !== name);
+      list.push({ name, values, savedAt: Date.now(), savedBy: session.name });
+      list.sort((a, b) => a.name.localeCompare(b.name));
+      store.setConfigPresets(list);
+      return list;
+    });
+  });
+  route('DELETE', '/api/settings/presets/:name', 'admin', ({ params, session }) => {
+    const name = presetName(params.name);
+    return act(session, 'preset_delete', name, null, async () => {
+      const list = store.configPresets().filter((p) => p.name !== name);
+      store.setConfigPresets(list);
+      return list;
     });
   });
 

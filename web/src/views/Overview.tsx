@@ -6,8 +6,9 @@ import { run } from '../lib/api.ts';
 import { toast } from '../lib/toast.ts';
 import { Counter } from '../lib/modal.tsx';
 import { fmtClock, fmtDuration, fmtAgo, fmtDist, pct, charCount, STATE_LABELS } from '../lib/format.ts';
-import { Card, Empty, ScoreRow, Fdot, useNow, useFactionColor } from '../components/common.tsx';
+import { Card, Empty, ScoreRow, Fdot, MapArt, useNow, useFactionColor } from '../components/common.tsx';
 import { KillRow, EngagementCard } from '../components/feedItems.tsx';
+import { CashCard } from '../components/cashChart.tsx';
 
 const HS_FLAG_PCT = 60;
 const HS_FLAG_MIN_KILLS = 8;
@@ -31,6 +32,7 @@ export default function Overview() {
         <Scores live={live} />
         <Card title="이번 매치 상위 플레이어"><div className="card-body"><TopPlayers live={live} /></div></Card>
       </div>
+      <CashCard />
       <div className="grid-2">
         <Card title="실시간 킬피드" extra={<a href="#feed" className="link">전체 보기</a>}>
           <div className="card-body list-tight">
@@ -112,8 +114,11 @@ function Stats({ live }: { live: Live | null }) {
   const modes = (s?.experiences || []).map(modeLabel).join(' · ');
   return (
     <div className="stat-grid">
-      <Stat label="맵" value={s?.map ?? '—'} sub={s ? [modes || '모드 정보 없음', s.lighting].filter(Boolean).join(' · ') : null} />
+      <Stat label="맵" value={s?.map ? <span className="inline-row"><MapArt map={s.map} lighting={s.lighting} variant="square" />{s.map}</span> : '—'}
+        sub={s ? [modes || '모드 정보 없음', s.lighting, s.alternator && s.alternator !== 'None' ? `존 ${s.alternator}` : null].filter(Boolean).join(' · ') : null} />
       <Stat label="인원" value={s ? `${s.players.current} / ${s.players.max}` : '—'} sub={s ? '공개 슬롯 기준 (예약 슬롯 제외)' : null} />
+      <Stat label="다음 맵" value={live?.nextMap ? <span className="inline-row"><MapArt map={live.nextMap.map} lighting={live.nextMap.lighting} variant="square" />{live.nextMap.map}</span> : '—'}
+        sub={live?.rotationEnabled === false ? '로테이션 꺼짐: 매치가 끝나면 지금 맵을 다시 불러옵니다' : live?.nextMap ? [live.nextMap.experiences.map(modeLabel).join(' · '), live.nextMap.lighting].filter(Boolean).join(' · ') || null : null} />
       <Stat label="매치 시계" value={fmtClock(m?.matchSeconds)}
         sub={m?.matchSecondsSource === 'feed' ? '킬피드 기준 (서버가 시계를 안 보냄)' : m?.matchSecondsSource ? null : '서버·피드 모두 시계 없음'} />
       <Stat label="매치 상태" value={feedState ? STATE_LABELS[feedState] ?? feedState : '—'}

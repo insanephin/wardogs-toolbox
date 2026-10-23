@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Link, Player, PlayerProfile } from '../lib/types.ts';
+import type { Link, Player, PlayerProfile, Streamer } from '../lib/types.ts';
 import { useStore, getState, can, serves } from '../lib/store.ts';
 import { api, run } from '../lib/api.ts';
 import { modal, confirmAction, openDialog, Overlay } from '../lib/modal.tsx';
 import { fmtNum, fmtDuration, fmtTime, pct } from '../lib/format.ts';
-import { Card, Empty, FactionChip, Fdot, useNow, useFactionColor } from '../components/common.tsx';
+import { Card, Empty, FactionChip, Fdot, Avatar, useNow, useFactionColor } from '../components/common.tsx';
 
 type SortKey = 'name' | 'linked' | 'faction' | 'kills' | 'deaths' | 'kd' | 'hs' | 'cash' | 'pingMs' | 'session';
 
@@ -41,7 +41,7 @@ export default function Players() {
         kd: p.deaths ? p.kills / p.deaths : p.kills,
         hs: s ? pct(s.headshots, s.kills) : null,
         session: p.joinedAt ? (now - p.joinedAt) / 1000 : null,
-        linked: p.link ? p.link.chzzkName ?? p.link.chzzkChannelId : '',
+        linked: p.streamer ? `0${p.streamer.discordName ?? ''}` : p.link ? `1${p.link.chzzkName ?? p.link.chzzkChannelId}` : '',
       };
     })
     .sort((a, b) => {
@@ -91,8 +91,8 @@ export default function Players() {
               <tbody>
                 {list.map((p) => (
                   <tr key={p.steamId}>
-                    <td><div className="pname">{p.name}</div><div className="mono muted small">{p.steamId}</div></td>
-                    <td><LinkCell link={p.link} /></td>
+                    <td><div className="who"><Avatar src={p.avatar} /><div><div className="pname">{p.name}</div><div className="mono muted small">{p.steamId}</div></div></div></td>
+                    <td><LinkCell link={p.link} streamer={p.streamer} /></td>
                     <td><FactionChip name={p.faction} color={color(p.faction)} /></td>
                     <td className="num">{p.kills}</td>
                     <td className="num">{p.deaths}</td>
@@ -114,7 +114,8 @@ export default function Players() {
   );
 }
 
-function LinkCell({ link }: { link: Link | null }) {
+function LinkCell({ link, streamer }: { link: Link | null; streamer: Streamer | null }) {
+  if (streamer) return <div className="small"><span className="tag tag-streamer">스트리머</span>{link ? `치지직 ${link.chzzkName || link.chzzkChannelId}` : streamer.discordName}</div>;
   if (!link) return <span className="tag tag-danger">미연동</span>;
   return (
     <div className="small">{`치지직 ${link.chzzkName || link.chzzkChannelId}`}</div>
@@ -155,7 +156,7 @@ function PlayerDialog({ p, profile, close }: { p: Player; profile: PlayerProfile
             <div><b>{fmtNum(t.teamkills ?? 0)}</b><span>팀킬 추정</span></div>
           </div>
         </div>
-        <InfoTable link={p.link} seen={profile?.player ?? null} />
+        <InfoTable link={p.link} streamer={p.streamer} seen={profile?.player ?? null} />
         {profile && profile.names.length > 1 ? <p className="small">사용한 이름: {profile.names.map((n) => n.name).join(', ')}</p> : null}
         {profile?.weapons?.length ? <p className="small">주무기: {profile.weapons.slice(0, 5).map((w) => `${w.weapon} ${w.kills}`).join(', ')}</p> : null}
         {can('mod') ? (
@@ -173,10 +174,16 @@ function PlayerDialog({ p, profile, close }: { p: Player; profile: PlayerProfile
   );
 }
 
-function InfoTable({ link, seen }: { link: Link | null; seen: PlayerProfile['player'] }) {
+function InfoTable({ link, streamer, seen }: { link: Link | null; streamer: Streamer | null; seen: PlayerProfile['player'] }) {
   return (
     <table className="table table-info small">
       <tbody>
+        {streamer ? (
+          <tr>
+            <th scope="row">스트리머</th>
+            <td><span className="tag tag-streamer">디스코드 인증</span>{`${streamer.discordName ?? streamer.discordId} · ${streamer.reserved ? '접속 우선권 적용' : '우선권 적용 대기'}`}</td>
+          </tr>
+        ) : null}
         <tr>
           <th scope="row">치지직</th>
           <td>{link

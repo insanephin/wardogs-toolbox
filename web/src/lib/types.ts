@@ -15,6 +15,18 @@ export interface Link {
   linkedAt: number | null;
 }
 
+export interface Streamer {
+  discordId: string;
+  discordName: string | null;
+  steamId: string;
+  steamName: string | null;
+  chzzkChannelId: string | null;
+  chzzkName: string | null;
+  linkedAt: number;
+  reserved: boolean;
+  lastError: string | null;
+}
+
 export interface LinkRow extends Link {
   lastName: string | null;
   lastSeen: number | null;
@@ -30,6 +42,8 @@ export interface Player {
   pingMs: number;
   joinedAt: number | null;
   link: Link | null;
+  streamer: Streamer | null;
+  avatar: string | null;
 }
 
 interface FactionScore {
@@ -42,6 +56,7 @@ export interface GameStatus {
   serverName?: string;
   map?: string;
   lighting?: string;
+  alternator?: string;
   experiences?: string[];
   players: { current: number; max: number };
   factionScores?: FactionScore[];
@@ -80,8 +95,39 @@ export interface Live {
   cashUnreliable: boolean;
   serverId: string | null;
   feed: FeedStatus;
-  gameFeed: { enabled: boolean; endpointCount: number; anyUnhealthy: boolean } | null;
+  gameFeed: { enabled: boolean; endpointCount: number; anyUnhealthy: boolean; endpoints?: FeedEndpoint[] } | null;
   matchStats: MatchStat[];
+  entryGate: EntryGate;
+  nextMap: { map: string; lighting: string | null; experiences: string[] } | null;
+  rotationEnabled: boolean | null;
+}
+
+export interface CashHistory {
+  matchKey: string | null;
+  points: { t: number; total: number; factions: Record<string, number> }[];
+}
+
+export interface FeedEndpoint {
+  index: number;
+  scheme: string;
+  host: string;
+  healthy: boolean;
+  queued: number;
+  inFlight: number;
+  consecutiveFailures: number;
+  sentTotal: number;
+  droppedTotal: number;
+  lastHttpStatus: number | null;
+  lastSuccessAt: number | null;
+}
+
+export interface EntryGate {
+  active: boolean;
+  threshold: number;
+  message: string;
+  startedAt: number | null;
+  openAt: number | null;
+  streamersOnline: number;
 }
 
 export interface Capabilities {
@@ -90,7 +136,7 @@ export interface Capabilities {
   limits?: { maxRequestsPerMinutePerIp?: number; maxBodyBytes?: number };
   config?: { writable?: boolean };
   routes: string[];
-  features: { changeTeam: boolean; feed: boolean; reservedRoutes: boolean; configDocument: boolean };
+  features: { changeTeam: boolean; feed: boolean; reservedRoutes: boolean; configDocument: boolean; sponsor?: boolean };
   version: { build: string | null; project: { name?: string; version?: string } } | null;
 }
 
@@ -239,9 +285,43 @@ export interface ConfigResult {
   errors?: { section?: string; key?: string; message?: string; code?: string }[];
   changed?: { section: string; removed?: boolean; added?: boolean; keys?: string[] }[];
   outcomes?: { section: string; state: string; detail?: string }[];
-  shadowed?: unknown[];
+  shadowed?: { section: string; key: string; declared?: string; effective?: string }[];
   stripped?: unknown[];
   warnings?: unknown[];
+}
+
+export type SettingValue = string | number | boolean;
+
+export interface SettingField {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'bool' | 'enum';
+  section: string;
+  ini: string;
+  def: SettingValue;
+  min?: number;
+  max?: number;
+  maxLength?: number;
+  options?: { value: string; label: string }[];
+  hint?: string;
+  secret?: boolean;
+}
+
+export interface ConfigPreset {
+  name: string;
+  values: Record<string, SettingValue>;
+  savedAt: number;
+  savedBy: string;
+}
+
+export interface SettingsDoc {
+  revision: string;
+  writable: boolean;
+  fields: SettingField[];
+  values: Record<string, SettingValue | null>;
+  locked: Record<string, string>;
+  applies: Record<string, { state: string; description: string | null }>;
+  presets: ConfigPreset[];
 }
 
 export interface FeedRequestRow {

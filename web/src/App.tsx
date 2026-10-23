@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ComponentType } from 'react';
 import { useStore, setState, getState, can, colorsFrom, withEngagements } from './lib/store.ts';
 import { api, errorMessage } from './lib/api.ts';
-import type { Action, Capabilities, Engagement, FeedEvent, FeedStatus, Kill, Live, Me, Report, Role } from './lib/types.ts';
+import type { Action, CashHistory, Capabilities, Engagement, FeedEvent, FeedStatus, Kill, Live, Me, Report, Role } from './lib/types.ts';
 import { toast, useToasts } from './lib/toast.ts';
 import { ModalHost } from './lib/modal.tsx';
 import { fmtAgo } from './lib/format.ts';
@@ -14,6 +14,7 @@ import Moderation from './views/Moderation.tsx';
 import Links from './views/Links.tsx';
 import Match from './views/Match.tsx';
 import Config from './views/Config.tsx';
+import Settings from './views/Settings.tsx';
 import Audit from './views/Audit.tsx';
 import Server from './views/Server.tsx';
 import Reports from './views/Reports.tsx';
@@ -44,7 +45,8 @@ const VIEWS: Page[] = [
   { id: 'reports', label: '신고', View: Reports, role: 'viewer' },
   { id: 'system', label: '설정', role: 'viewer', tabs: [
     { id: 'server', label: '연결 정보', View: Server, role: 'viewer' },
-    { id: 'config', label: '서버 설정', View: Config, role: 'admin' },
+    { id: 'settings', label: '간편 설정', View: Settings, role: 'admin' },
+    { id: 'config', label: '설정 문서', View: Config, role: 'admin' },
     { id: 'audit', label: '감사 로그', View: Audit, role: 'admin' },
   ] },
 ];
@@ -139,6 +141,9 @@ function useLiveStream() {
       on<FeedEvent>('matchEvent', (ev) => setState((s) => ({ matchEvents: [ev, ...s.matchEvents].slice(0, 200) })));
       on<FeedStatus>('feed', (feed) => setState((s) => (s.live ? { live: { ...s.live, feed } } : {})));
       on<Action>('action', (a) => setState({ lastAction: a }));
+      on<{ matchKey: string | null; point: CashHistory['points'][number] }>('cash', ({ matchKey, point }) => setState((s) => ({
+        cash: { matchKey, points: s.cash?.matchKey === matchKey ? [...s.cash.points, point].slice(-360) : [point] },
+      })));
       on<Report>('report', (r) => {
         setState({ lastReport: r });
         toast(`새 신고: ${r.targetName}`, 'warn');
@@ -150,7 +155,7 @@ function useLiveStream() {
     return () => {
       cancelled = true;
       source?.close();
-      setState({ live: null, caps: null, kills: [], engagements: new Map(), matchEvents: [], lastAction: null, lastReport: null, streamDown: false });
+      setState({ live: null, caps: null, kills: [], engagements: new Map(), matchEvents: [], lastAction: null, lastReport: null, cash: null, streamDown: false });
     };
   }, []);
 }

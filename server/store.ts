@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { ConfigPreset } from './settings.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS kills (
@@ -154,6 +155,23 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 CREATE INDEX IF NOT EXISTS reports_created ON reports(created_at);
 
+CREATE TABLE IF NOT EXISTS discord_links (
+  discord_id TEXT PRIMARY KEY,
+  discord_name TEXT,
+  steam_id TEXT NOT NULL UNIQUE,
+  steam_name TEXT,
+  chzzk_channel_id TEXT,
+  chzzk_name TEXT,
+  linked_at INTEGER NOT NULL,
+  reserved INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS discord_releases (
+  steam_id TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS whitelist_bans (
   steam_id TEXT PRIMARY KEY,
   name TEXT,
@@ -174,6 +192,17 @@ export interface Whitelist {
   message: string;
 }
 const WHITELIST_DEFAULT: Whitelist = { mode: 'off', message: '화이트리스트에 등록되지 않은 유저입니다.' };
+
+export interface EntryGate {
+  active: boolean;
+  threshold: number;
+  message: string;
+  startedAt: number | null;
+  openAt: number | null;
+}
+const ENTRY_GATE_DEFAULT: EntryGate = {
+  active: false, threshold: 5, message: '스트리머 입장 중입니다. 잠시 후 다시 접속해주세요.', startedAt: null, openAt: null,
+};
 
 type Row = Record<string, any>;
 
@@ -296,6 +325,23 @@ export interface WhitelistBan {
   linked: boolean;
 }
 
+export interface DiscordLink {
+  discordId: string;
+  discordName: string | null;
+  steamId: string;
+  steamName: string | null;
+  chzzkChannelId: string | null;
+  chzzkName: string | null;
+  linkedAt: number;
+  reserved: boolean;
+  lastError: string | null;
+}
+
+const DISCORD_COLUMNS = `discord_id AS discordId, discord_name AS discordName, steam_id AS steamId, steam_name AS steamName,
+  chzzk_channel_id AS chzzkChannelId, chzzk_name AS chzzkName, linked_at AS linkedAt, reserved, last_error AS lastError`;
+
+const rowToDiscordLink = (r: Row): DiscordLink => ({ ...r, reserved: !!r.reserved }) as DiscordLink;
+
 export interface Report {
   id: number;
   createdAt: number;
@@ -332,6 +378,8 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
     this.db.exec(SCHEMA);
+    const cols = new Set((this.db.prepare('PRAGMA table_info(discord_links)').all() as Row[]).map((c) => c.name));
+    for (const c of ['chzzk_channel_id', 'chzzk_name']) if (!cols.has(c)) this.db.exec(`ALTER TABLE discord_links ADD COLUMN ${c} TEXT`);
     this.q = prepareQueries(this.db);
   }
 
@@ -568,6 +616,14 @@ export class Store {
     }
   }
 
+  linkIfFree(steam: { id: string; name: string }, chzzk: { id: string; name: string }, linkedAt: string): boolean {
+    const taken = [this.linkByAccount('steam', steam.id), this.linkByAccount('chzzk', chzzk.id)]
+      .some((l) => l && (l.steamId !== steam.id || l.chzzkChannelId !== chzzk.id));
+    if (taken) return false;
+    this.saveLink(steam.id, steam.name, chzzk.id, chzzk.name, linkedAt);
+    return true;
+  }
+
   unlink(steamId: string): void {
     this.db.prepare('DELETE FROM account_links WHERE steam_id = ?').run(steamId);
   }
@@ -578,6 +634,54 @@ export class Store {
     return new Map(rows.map((r) => [r.steamId, rowToLink(r)]));
   }
 
+  discordLink(by: 'discord' | 'steam', id: string): DiscordLink | null {
+    const col = by === 'discord' ? 'discord_id' : 'steam_id';
+    const r = this.db.prepare(`SELECT ${DISCORD_COLUMNS} FROM discord_links WHERE ${col} = ?`).get(id) as Row | undefined;
+    return r ? rowToDiscordLink(r) : null;
+  }
+
+  discordLinks({ unreserved = false } = {}): DiscordLink[] {
+    return (this.db.prepare(`SELECT ${DISCORD_COLUMNS} FROM discord_links ${unreserved ? 'WHERE reserved = 0' : ''}
+      ORDER BY linked_at DESC`).all() as Row[]).map(rowToDiscordLink);
+  }
+
+  saveDiscordLink(discordId: string, discordName: string, link: Link, at: number): void {
+    this.db.prepare(`INSERT INTO discord_links (discord_id, discord_name, steam_id, steam_name, chzzk_channel_id, chzzk_name, linked_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(discord_id) DO UPDATE SET discord_name = excluded.discord_name, steam_name = excluded.steam_name,
+        chzzk_channel_id = excluded.chzzk_channel_id, chzzk_name = excluded.chzzk_name, linked_at = excluded.linked_at,
+        reserved = CASE WHEN steam_id = excluded.steam_id THEN reserved ELSE 0 END,
+        last_error = CASE WHEN steam_id = excluded.steam_id THEN last_error ELSE NULL END,
+        steam_id = excluded.steam_id`).run(discordId, discordName, link.steamId, link.steamName, link.chzzkChannelId, link.chzzkName, at);
+  }
+
+  discordLinksBySteam(steamIds: string[]): Map<string, DiscordLink> {
+    if (!steamIds.length) return new Map();
+    const rows = this.db.prepare(`SELECT ${DISCORD_COLUMNS} FROM discord_links
+      WHERE steam_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(steamIds)) as Row[];
+    return new Map(rows.map((r) => [r.steamId, rowToDiscordLink(r)]));
+  }
+
+  removeDiscordLink(discordId: string): void {
+    this.db.prepare('DELETE FROM discord_links WHERE discord_id = ?').run(discordId);
+  }
+
+  markDiscordReserved(steamId: string, error: string | null): void {
+    this.db.prepare('UPDATE discord_links SET reserved = ?, last_error = ? WHERE steam_id = ?').run(error ? 0 : 1, error, steamId);
+  }
+
+  discordReleases(): string[] {
+    return (this.db.prepare('SELECT steam_id FROM discord_releases ORDER BY created_at').all() as Row[]).map((r) => r.steam_id);
+  }
+
+  addDiscordRelease(steamId: string): void {
+    this.db.prepare('INSERT OR IGNORE INTO discord_releases (steam_id, created_at) VALUES (?, ?)').run(steamId, Date.now());
+  }
+
+  removeDiscordRelease(steamId: string): void {
+    this.db.prepare('DELETE FROM discord_releases WHERE steam_id = ?').run(steamId);
+  }
+
   whitelist(): Whitelist {
     const row = this.q.whitelist.get() as Row | undefined;
     return { ...WHITELIST_DEFAULT, ...(row ? JSON.parse(row.value) : {}) };
@@ -586,6 +690,26 @@ export class Store {
   setWhitelist(value: Whitelist): void {
     this.db.prepare(`INSERT INTO settings (key, value) VALUES ('whitelist', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
+  }
+
+  entryGate(): EntryGate {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'entry_gate'").get() as Row | undefined;
+    return { ...ENTRY_GATE_DEFAULT, ...(row ? JSON.parse(row.value) : {}) };
+  }
+
+  setEntryGate(value: EntryGate): void {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('entry_gate', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
+  }
+
+  configPresets(): ConfigPreset[] {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'config_presets'").get() as Row | undefined;
+    return row ? JSON.parse(row.value) : [];
+  }
+
+  setConfigPresets(list: ConfigPreset[]): void {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('config_presets', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(list));
   }
 
   whitelistBans(): WhitelistBan[] {
@@ -619,8 +743,9 @@ function prepareQueries(db: DatabaseSync) {
       WHERE a.steam_id IN (SELECT value FROM json_each(?))`),
     whitelist: db.prepare("SELECT value FROM settings WHERE key = 'whitelist'"),
     whitelistBans: db.prepare(`SELECT w.steam_id AS steamId, w.name, w.created_at AS createdAt, w.last_error AS lastError,
-        a.steam_id IS NOT NULL AS linked
+        (a.steam_id IS NOT NULL OR d.steam_id IS NOT NULL) AS linked
       FROM whitelist_bans w LEFT JOIN account_links a ON a.steam_id = w.steam_id
+      LEFT JOIN discord_links d ON d.steam_id = w.steam_id
       ORDER BY w.created_at DESC`),
     insertKill: db.prepare(`INSERT OR IGNORE INTO kills
       (event_id, received_at, match_key, map, event_time, killer_steam, killer_name, killer_faction,

@@ -193,3 +193,15 @@ export function rotationEntriesInDoc(text: string): string[] {
 export function setRotationInDoc(text: string, entries: string[]): string {
   return setArray(text, ROTATION_SECTION, ROTATION_KEY, entries, { op: '.', clear: true });
 }
+
+export interface RotationSettings {
+  enabled?: boolean;
+  mode?: 'ordered' | 'random';
+}
+
+export function setRotationSettingsInDoc(text: string, { enabled, mode }: RotationSettings): string {
+  let out = text;
+  if (enabled !== undefined) out = setValue(out, ROTATION_SECTION, 'bEnabled', enabled ? 'True' : 'False');
+  if (mode !== undefined) out = setValue(out, ROTATION_SECTION, 'RotationMode', mode === 'random' ? 'Random' : 'Ordered');
+  return out;
+}

@@ -32,6 +32,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       apiKey: env.STEAM_WEB_API_KEY || '',
       returnUrl: env.STEAM_RETURN_URL || callback('steam'),
     },
+    publicUrl,
+    mapArtUrl: env.MAP_ART_URL ?? 'http://rcon.wardogs.com/img/maps',
+    discord: {
+      botSecret: env.DISCORD_BOT_SECRET || '',
+    },
   };
 }
 

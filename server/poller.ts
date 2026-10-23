@@ -3,6 +3,7 @@ import type { Store, MatchPlayerDelta } from './store.ts';
 import type { FeedProcessor } from './feed.ts';
 import { errorMessage } from './http.ts';
 import type { Emit } from './http.ts';
+import type { SteamProfiles } from './steam.ts';
 
 const WATCHED_MS = 2000;
 const IDLE_MS = 10_000;
@@ -15,6 +16,14 @@ const RESTART_AFTER_SEC = 24 * 3600;
 const WHITELIST_PER_TICK = 3;
 const WHITELIST_RETRY_MS = 30_000;
 const SCOREBOARD_FLUSH_MS = 30_000;
+const CASH_SAMPLE_MS = 60_000;
+const CASH_MAX_POINTS = 360;
+
+interface CashPoint {
+  t: number;
+  total: number;
+  factions: Record<string, number>;
+}
 
 interface ScoreSeen {
   matchKey: string;
@@ -29,6 +38,7 @@ interface PollerOptions {
   feed: FeedProcessor;
   emit: Emit;
   watchers: () => number;
+  steam?: SteamProfiles;
 }
 
 export class Poller {
@@ -37,6 +47,7 @@ export class Poller {
   feed: FeedProcessor;
   emit: Emit;
   watchers: () => number;
+  steam: SteamProfiles | undefined;
 
   status: GameStatus | null = null;
   players: GamePlayer[] = [];
@@ -54,16 +65,23 @@ export class Poller {
   joinedAt = new Map<string, number>();
   lastSeenWrite = new Map<string, number>();
   whitelistTried = new Map<string, number>();
+  gateTried = new Map<string, number>();
   scoreSeen = new Map<string, ScoreSeen>();
   scorePending = new Map<string, MatchPlayerDelta>();
   lastScoreFlush = Date.now();
+  cash: { matchKey: string | null; points: CashPoint[] } = { matchKey: null, points: [] };
+  lastCashAt = 0;
+  lastMatchSeconds: number | null = null;
   lastHealthAt = 0;
+  rotation: Record<string, any> | null = null;
+  rotationStale = true;
   lastCapsAt = 0;
   timer: NodeJS.Timeout | undefined;
   ticking = false;
   stopped = false;
 
-  constructor({ rcon, store, feed, emit, watchers }: PollerOptions) {
+  constructor({ rcon, store, feed, emit, watchers, steam }: PollerOptions) {
+    this.steam = steam;
     this.rcon = rcon;
     this.store = store;
     this.feed = feed;
@@ -113,24 +131,33 @@ export class Poller {
       const [status, players] = await Promise.all([this.rcon.status(), this.rcon.players()]);
       if (now - this.lastHealthAt > HEALTH_EVERY_MS) {
         const f = this.rcon.features;
-        if (f.health) this.health = await this.rcon.health();
+        if (f.health) this.health = await this.rcon.health().catch(() => null);
         if (f.feed) this.gameFeed = await this.rcon.feedHealth().catch(() => null);
         this.lastHealthAt = now;
+        this.rotationStale = true;
       }
 
       if (this.status && status.map !== this.status.map) {
         this.mapChangedAt = now;
+        this.rotationStale = true;
         this.feed.onMapChange(status.map, now);
       } else if (!this.status && status.map) {
         this.feed.onMapChange(status.map, now);
       }
 
       this.status = status;
+      if (this.rotationStale && this.rcon.features.rotation) {
+        this.rotation = await this.rcon.rotation().catch(() => this.rotation);
+        this.rotationStale = false;
+      }
       this.ingestPlayers(players, now);
+      this.steam?.warm(this.steamIds());
       this.trackScoreboard(now);
+      this.sampleCash(now);
       this.online = true;
       this.lastError = null;
       await this.enforcePendingBans();
+      await this.enforceEntryGate(now);
       await this.enforceWhitelist(now);
     } catch (err) {
       const e = err as RconError;
@@ -181,6 +208,7 @@ export class Poller {
           this.factions.delete(id);
           this.lastSeenWrite.delete(id);
           this.whitelistTried.delete(id);
+          this.gateTried.delete(id);
           this.scoreSeen.delete(id);
         }
       }
@@ -218,6 +246,29 @@ export class Poller {
     if (now - this.lastScoreFlush >= SCOREBOARD_FLUSH_MS) this.flushScoreboard(now);
   }
 
+  sampleCash(now: number): void {
+    const matchKey = this.feed.matchKey;
+    const seconds = this.status?.matchSeconds ?? null;
+    const restarted = seconds != null && this.lastMatchSeconds != null && seconds < this.lastMatchSeconds - 5;
+    this.lastMatchSeconds = seconds;
+    if (matchKey !== this.cash.matchKey || restarted) {
+      this.cash = { matchKey, points: [] };
+      this.lastCashAt = 0;
+    }
+    if (!matchKey || !this.players.length || this.inMapTransition(now) || this.cashUnreliable()) return;
+    if (now - this.lastCashAt < CASH_SAMPLE_MS) return;
+    this.lastCashAt = now;
+    const point: CashPoint = { t: now, total: 0, factions: {} };
+    for (const p of this.players) {
+      const cash = Number(p.cash) || 0;
+      point.total += cash;
+      if (p.faction) point.factions[p.faction] = (point.factions[p.faction] ?? 0) + cash;
+    }
+    this.cash.points.push(point);
+    if (this.cash.points.length > CASH_MAX_POINTS) this.cash.points.splice(0, this.cash.points.length - CASH_MAX_POINTS);
+    this.emit('cash', { matchKey, point });
+  }
+
   flushScoreboard(now = Date.now()) {
     this.lastScoreFlush = now;
     if (!this.scorePending.size) return;
@@ -252,6 +303,40 @@ export class Poller {
     }
   }
 
+  async enforceEntryGate(now: number): Promise<void> {
+    const gate = this.store.entryGate();
+    if (!gate.active) return;
+    const streamers = this.store.discordLinksBySteam(this.steamIds());
+    const online = this.players.filter((p) => p.steamId && streamers.has(p.steamId)).length;
+    const why = online >= gate.threshold ? 'threshold' : gate.openAt && now >= gate.openAt ? 'timeout' : null;
+    if (why) {
+      this.store.setEntryGate({ ...gate, active: false, startedAt: null, openAt: null });
+      this.emit('action', this.store.logAction('system', 'entry_gate_open', null, { why, streamers: online, threshold: gate.threshold }, true));
+      return;
+    }
+    if (this.inMapTransition(now)) return;
+    let budget = WHITELIST_PER_TICK;
+    for (const p of this.players) {
+      if (!budget) return;
+      if (!p.steamId || streamers.has(p.steamId)) continue;
+      if (now - (this.gateTried.get(p.steamId) ?? 0) < WHITELIST_RETRY_MS) continue;
+      this.gateTried.set(p.steamId, now);
+      budget--;
+      try {
+        await this.rcon.kick(p.steamId, gate.message);
+        this.emit('action', this.store.logAction('system', 'entry_gate_kick', p.steamId, { name: p.name, reason: gate.message }, true));
+      } catch (err) {
+        this.emit('action', this.store.logAction('system', 'entry_gate_kick', p.steamId, { name: p.name, reason: gate.message }, false, errorMessage(err)));
+      }
+    }
+  }
+
+  entryGateView() {
+    const gate = this.store.entryGate();
+    const streamers = this.store.discordLinksBySteam(this.steamIds());
+    return { ...gate, streamersOnline: this.players.filter((p) => p.steamId && streamers.has(p.steamId)).length };
+  }
+
   async enforceWhitelist(now: number): Promise<void> {
     const { mode, message } = this.store.whitelist();
     let budget = WHITELIST_PER_TICK;
@@ -273,9 +358,10 @@ export class Poller {
 
     if (mode === 'off' || !this.players.length) return;
     const linked = this.store.linksBySteam(this.steamIds());
+    const streamers = this.store.discordLinksBySteam(this.steamIds());
     for (const p of this.players) {
       if (!budget) return;
-      if (!p.steamId || linked.has(p.steamId)) continue;
+      if (!p.steamId || linked.has(p.steamId) || streamers.has(p.steamId)) continue;
       if (now - (this.whitelistTried.get(p.steamId) ?? 0) < WHITELIST_RETRY_MS) continue;
       this.whitelistTried.set(p.steamId, now);
       budget--;
@@ -295,6 +381,18 @@ export class Poller {
     }
   }
 
+  refreshRotation() {
+    this.rotationStale = true;
+    this.nudge();
+  }
+
+  nextMapView() {
+    const r = this.rotation;
+    if (!r || r.enabled === false) return null;
+    const e = (r.entries || []).find((x: Record<string, any>) => x.status === 'next');
+    return e ? { map: e.map, lighting: e.lighting ?? null, experiences: e.experiences ?? [] } : null;
+  }
+
   matchView() {
     const s = this.status;
     if (!s) return null;
@@ -310,10 +408,13 @@ export class Poller {
 
   playersView() {
     const links = this.store.linksBySteam(this.steamIds());
+    const streamers = this.store.discordLinksBySteam(this.steamIds());
     return this.players.map((p) => ({
       ...p,
       joinedAt: (p.steamId && this.joinedAt.get(p.steamId)) || null,
       link: (p.steamId && links.get(p.steamId)) || null,
+      streamer: (p.steamId && streamers.get(p.steamId)) || null,
+      avatar: (p.steamId && this.steam?.cached(p.steamId)?.avatar) || null,
     }));
   }
 
@@ -349,6 +450,9 @@ export class Poller {
       feed: this.feed.status(),
       gameFeed: this.gameFeed,
       matchStats: this.store.matchStats(this.feed.matchKey),
+      nextMap: this.nextMapView(),
+      rotationEnabled: this.rotation ? this.rotation.enabled !== false : null,
+      entryGate: this.entryGateView(),
     };
   }
 

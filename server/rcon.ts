@@ -1,10 +1,12 @@
 import {
-  reservedIdsInDoc, setReservedInDoc, rotationEntriesInDoc, setRotationInDoc,
+  reservedIdsInDoc, setReservedInDoc, rotationEntriesInDoc, setRotationInDoc, setRotationSettingsInDoc,
   parseRotationEntry, formatRotationEntry, sameSelection, getValue, setValue,
 } from './inidoc.ts';
-import type { RotationSelection } from './inidoc.ts';
+import type { RotationSelection, RotationSettings } from './inidoc.ts';
 
 const SCORE_SECTION = 'MatchState.Playing.KOTH';
+const SESSION_SECTION = '/Script/WDGame.WDGameSession';
+const SPONSOR_KEY = 'ServerImageURL';
 const SCORE_KEY = 'ScorePeriod';
 
 type Json = Record<string, any>;
@@ -122,6 +124,8 @@ export class RconClient {
       feed: false,
       reservedRoutes: false,
       configDocument: false,
+      sponsor: false,
+      rotation: false,
     };
   }
 
@@ -196,6 +200,8 @@ export class RconClient {
       feed: has('GET /v1/feed'),
       reservedRoutes: has('POST /v1/reserved-slots') && has('DELETE /v1/reserved-slots/{}'),
       configDocument: has('PUT /v1/config') && caps.config?.writable !== false,
+      sponsor: has('GET /v1/sponsor'),
+      rotation: has('GET /v1/rotation'),
     };
     return caps;
   }
@@ -227,6 +233,19 @@ export class RconClient {
       enabled: !!d.enabled,
       endpointCount: Number(d.endpointCount) || 0,
       anyUnhealthy: !!d.anyUnhealthy,
+      endpoints: (Array.isArray(d.endpoints) ? d.endpoints : []).map((e: Json) => ({
+        index: Number(e.index) || 0,
+        scheme: String(e.scheme || ''),
+        host: String(e.host || ''),
+        healthy: !!e.healthy,
+        queued: Number(e.queued) || 0,
+        inFlight: Number(e.inFlight) || 0,
+        consecutiveFailures: Number(e.consecutiveFailures) || 0,
+        sentTotal: Number(e.sentTotal) || 0,
+        droppedTotal: Number(e.droppedTotal) || 0,
+        lastHttpStatus: e.lastHttpStatus == null ? null : Number(e.lastHttpStatus),
+        lastSuccessAt: e.lastSuccessUnixSeconds == null ? null : Number(e.lastSuccessUnixSeconds) * 1000,
+      })),
     };
   }
 
@@ -325,6 +344,18 @@ export class RconClient {
     return { experiences: exp.experiences || [], alternators: alt.alternators || [] };
   }
 
+  async sponsor(): Promise<string> {
+    if (this.features.sponsor) return String((await this.get('/v1/sponsor')).imageUrl || '');
+    return getValue((await this.config()).text, SESSION_SECTION, SPONSOR_KEY) || '';
+  }
+
+  setSponsor(url: string) {
+    return this.editConfig((text) => ({
+      text: setValue(text, SESSION_SECTION, SPONSOR_KEY, url),
+      message: url ? '스폰서 이미지를 바꿨습니다.' : '스폰서 이미지를 지웠습니다.',
+    }));
+  }
+
   rotation(): Promise<Json> {
     return this.get('/v1/rotation');
   }
@@ -383,6 +414,23 @@ export class RconClient {
       if (index !== slot) entries.splice(slot, 0, ...entries.splice(index, 1));
       return `다음 맵을 ${selection.map}(으)로 정했습니다 (로테이션 ${slot + 1}번).`;
     });
+  }
+
+  setRotationSettings(settings: RotationSettings) {
+    const parts = [
+      settings.enabled !== undefined ? `로테이션을 ${settings.enabled ? '켰습니다' : '껐습니다'}.` : '',
+      settings.mode ? `순서를 ${settings.mode === 'random' ? '무작위' : '순서대로'}로 바꿨습니다.` : '',
+    ];
+    return this.editConfig((text) => ({ text: setRotationSettingsInDoc(text, settings), message: parts.filter(Boolean).join(' ') }));
+  }
+
+  async jumpToRotation(index: number) {
+    const raw = rotationEntriesInDoc((await this.config()).text)[index];
+    if (!raw) throw new RconError(400, 'bad_index', `로테이션 ${index + 1}번 항목이 없습니다.`);
+    const entry = parseRotationEntry(raw);
+    await this.setNextMap(entry);
+    await this.endMatch();
+    return { message: `매치를 끝냈습니다. 종료 화면이 지나면 ${entry.map}(으)로 이동합니다.` };
   }
 
   editRotation(mutate: (entries: string[]) => string) {

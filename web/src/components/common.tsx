@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { Action } from '../lib/types.ts';
 import { useStore } from '../lib/store.ts';
+import { api } from '../lib/api.ts';
 
 export function useNow(ms = 5000): number {
   const [now, setNow] = useState(Date.now);
@@ -59,4 +60,37 @@ export function useOnAction(fn: (a: Action) => unknown): void {
     seen.current = latest;
     fnRef.current(latest);
   }, [latest]);
+}
+
+export function Avatar({ src }: { src: string | null | undefined }) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) return <span className="avatar avatar-empty" aria-hidden="true" />;
+  return <img className="avatar" src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} />;
+}
+
+export type SteamProfiles = Record<string, { name: string; avatar: string }>;
+
+export function useSteamProfiles(ids: string[]): SteamProfiles {
+  const [profiles, setProfiles] = useState<SteamProfiles>({});
+  const key = [...new Set(ids)].sort().join(',');
+  useEffect(() => {
+    if (!key) return;
+    let stale = false;
+    const list = key.split(',');
+    const chunks: string[][] = [];
+    for (let i = 0; i < list.length; i += 200) chunks.push(list.slice(i, i + 200));
+    Promise.all(chunks.map((c) => api<SteamProfiles>('GET', `/api/steam/profiles?ids=${c.join(',')}`)))
+      .then((parts) => !stale && setProfiles(Object.assign({}, ...parts)), () => {});
+    return () => {
+      stale = true;
+    };
+  }, [key]);
+  return profiles;
+}
+
+export function MapArt({ map, lighting, variant }: { map: string | null | undefined; lighting?: string | null; variant: 'square' | 'wide' | '720' }) {
+  const src = map ? `/api/map-art?${new URLSearchParams({ map, lighting: lighting || 'DayClear', variant })}` : null;
+  const [broken, setBroken] = useState<string | null>(null);
+  if (!src || broken === src) return null;
+  return <img className={`map-art map-art-${variant}`} src={src} alt="" onError={() => setBroken(src)} />;
 }
