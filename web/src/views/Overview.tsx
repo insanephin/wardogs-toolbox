@@ -61,10 +61,10 @@ function Banners({ live }: { live: Live | null }) {
   const items: ['info' | 'warn' | 'error', string][] = [];
   if (!live) items.push(['info', '서버 상태를 불러오는 중입니다.']);
   else {
-    if (!live.online) items.push(['error', `RCON에 연결할 수 없습니다: ${live.lastError?.message ?? '알 수 없는 오류'}. 표시된 값은 마지막으로 받은 상태입니다.`]);
+    if (!live.online) items.push(['error', `RCON에 연결할 수 없습니다: ${live.lastError?.message ?? '알 수 없는 오류'}`]);
     if (live.mapTransition) items.push(['warn', '맵 전환 중입니다. 약 40초간 팀 정보가 비고 인원이 0으로 보일 수 있습니다. 전원 퇴장이 아닙니다.']);
     if (live.restart?.due) items.push(['warn', `가동 ${fmtDuration(live.restart.uptimeSeconds)}: 게임 자체 24시간 재시작이 이번 라운드가 끝나면 실행됩니다.`]);
-    if (live.cashUnreliable) items.push(['info', '이 호스트는 모든 플레이어의 돈을 0으로 보고합니다. 돈 기반 판단은 쓰지 마세요.']);
+    if (live.cashUnreliable) items.push(['info', '이 호스트는 모든 플레이어의 돈을 0으로 보고합니다.']);
     const f = live.feed;
     const playing = (live.status?.players?.current ?? 0) > 0;
     if (playing && !live.mapTransition && (!f?.lastBatchAt || Date.now() - f.lastBatchAt > FEED_SILENT_MS)) {
@@ -135,7 +135,7 @@ function Scores({ live }: { live: Live | null }) {
   const rows = live?.status?.factionScores || [];
   return (
     <Card title="진영별 점수"
-      extra={cap ? <span className="muted small">{`목표 ${cap}점${m?.scoreCapAssumed ? ' (추정: 서버가 상한을 안 보내 KOTH 기본값)' : ''}`}</span> : null}>
+      extra={cap ? <span className="muted small">{`목표 ${cap}점${m?.scoreCapAssumed ? ' (서버가 상한을 안 보내 KOTH 기본값)' : ''}`}</span> : null}>
       <div className="card-body">
         {rows.length ? rows.map((f) => <ScoreRow key={f.name} name={f.name} color={f.colorHex} score={f.score} cap={cap} />) : <Empty>점수 정보 없음</Empty>}
       </div>

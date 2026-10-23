@@ -183,7 +183,7 @@ function createApp(config: Config) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = loadConfig();
   const app = createApp(config);
-  if (!app.rcon.baseUrl || !app.rcon.password) console.warn('[경고] RCON 연결 정보가 없습니다. 관리자 패널 서버 탭에서 주소와 비밀번호를 입력하세요.');
+  if (!app.rcon.baseUrl || !app.rcon.password) console.warn('[경고] RCON 연결 정보가 없습니다.');
   if (!config.feedToken) console.warn('[경고] FEED_TOKEN이 비어 있어 이벤트 피드를 받지 않습니다.');
   if (!app.auth.admins.size) console.warn('[경고] ADMIN_CHZZK_IDS가 비어 있어 아무도 관리자 패널에 로그인할 수 없습니다.');
   if (!config.chzzk.clientId || !config.chzzk.clientSecret || !config.chzzk.redirectUrl) {

@@ -189,7 +189,6 @@ function TurnoverForm() {
           {`교대 중 · 킥 대기 ${turnover.pending}명 · 재입장 차단 ${turnover.blocked}명${turnover.blockedUntil ? ` (${fmtTime(turnover.blockedUntil)}까지)` : ''}`}
         </div>
       ) : <p className="muted small">{turnover.enabled ? '켜짐 · 다음 매치 종료 화면에서 실행됩니다' : '꺼짐'}</p>}
-      <p className="muted small">켜 두면 매치가 끝나 종료 화면이 뜰 때 화이트리스트를 뺀 전원을 한 번에 킥하고, 킥된 플레이어는 30초 동안 다시 들어올 수 없습니다. 그동안 새로 온 사람이 먼저 자리를 잡고, 30초 뒤에는 누구나 남은 자리에 들어올 수 있습니다. 관리자가 맵 변경·로테이션 이동·매치 종료로 직접 바꾼 경우에는 실행하지 않습니다. 게임 서버 이벤트 피드가 들어와야 작동하며, 피드가 없으면 아무 일도 하지 않습니다.</p>
       <label className="field">
         <span className="field-label"><span>안내 문구 (킥 사유로 보임)</span><span>{`${charCount(message)}/200`}</span></span>
         <textarea rows={2} maxLength={200} value={message} disabled={!editable} onChange={(e) => setMessage(e.target.value)} />
