@@ -11,7 +11,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const publicUrl = (env.PUBLIC_URL || (chzzkRedirect ? new URL(chzzkRedirect).origin : '')).replace(/\/+$/, '');
   const callback = (name: string) => (publicUrl ? `${publicUrl}/callback/${name}` : '');
   return {
-    host: '127.0.0.1',
+    host: '0.0.0.0',
     port: 8080,
     admins: env.ADMIN_CHZZK_IDS || '',
     feedToken: env.FEED_TOKEN || '',
