@@ -15,7 +15,7 @@ services:
         required: true
     environment:
       DASH_HOST: 0.0.0.0
-      DASH_PORT: 8080
+      DASH_PORT: 8087
       TRUST_PROXY: "true"
       COOKIE_SECURE: "true"
       DB_PATH: /app/data/dashboard.db
@@ -39,14 +39,6 @@ services:
       "pip install --upgrade pip && pip install -r requirements.txt && python main.py"
     ]
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARED_TOKEN:?Set CLOUDFLARED_TOKEN in .env}"]
-    restart: unless-stopped
-    networks:
-      - app
-
 networks:
   app:
     driver: bridge
-
