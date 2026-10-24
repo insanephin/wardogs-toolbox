@@ -14,11 +14,11 @@ services:
       - path: .env
         required: true
     environment:
-      DASH_HOST: 0.0.0.0
-      DASH_PORT: 8087
       TRUST_PROXY: "true"
       COOKIE_SECURE: "true"
       DB_PATH: /app/data/dashboard.db
+    ports:
+      - "8087:8080"
     networks:
       - app
     extra_hosts:

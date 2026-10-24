@@ -11,8 +11,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const publicUrl = (env.PUBLIC_URL || (chzzkRedirect ? new URL(chzzkRedirect).origin : '')).replace(/\/+$/, '');
   const callback = (name: string) => (publicUrl ? `${publicUrl}/callback/${name}` : '');
   return {
-    host: env.DASH_HOST || '127.0.0.1',
-    port: int('DASH_PORT', 8080),
+    host: '127.0.0.1',
+    port: 8080,
     admins: env.ADMIN_CHZZK_IDS || '',
     feedToken: env.FEED_TOKEN || '',
     engagementGapSec: int('ENGAGEMENT_GAP_SEC', 15),
