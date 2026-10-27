@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
   const isAdmin = mode === 'admin';
   return {
     root: import.meta.dirname,
-    base: isAdmin ? '/rcon/' : '/',
+    base: isAdmin ? '/panel/' : '/',
     plugins: [react()],
     build: {
       outDir: isAdmin ? '../dist/admin' : '../dist/public',

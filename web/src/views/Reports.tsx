@@ -4,8 +4,9 @@ import { can, useStore } from '../lib/store.ts';
 import { api, run, errorMessage } from '../lib/api.ts';
 import { modal } from '../lib/modal.tsx';
 import { fmtDateTime } from '../lib/format.ts';
-import { Card, Empty, useOnAction } from '../components/common.tsx';
+import { Card, PageActions, Empty, useOnAction } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
+import { SortTable } from '../components/sortTable.tsx';
 import { IconButton } from '../components/iconButton.tsx';
 import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
 
@@ -61,7 +62,8 @@ export default function Reports() {
   const cat = (id: string) => data?.categories[id] ?? id;
 
   return (
-    <Card title="신고" extra={<IconButton icon={faRotateRight} label="새로고침" onClick={load} />}>
+    <Card>
+      <PageActions><IconButton icon={faRotateRight} label="새로고침" onClick={load} /></PageActions>
       <div className="toolbar">
         <div className="seg" role="tablist">
           {FILTERS.map(([id, label]) => (
@@ -73,36 +75,41 @@ export default function Reports() {
         {error ? <div className="banner banner-error">{error}</div> : null}
         {!data ? <Empty><Spinner /></Empty> : !data.reports.length ? <Empty>신고가 없습니다.</Empty> : (
           <div className="table-wrap">
-            <table className="table">
-              <thead><tr><th>시각</th><th>대상</th><th>유형</th><th>내용</th><th>신고자</th><th>상태</th>{can('mod') ? <th /> : null}</tr></thead>
-              <tbody>
-                {data.reports.map((r) => (
-                  <tr key={r.id}>
-                    <td className="nowrap">{fmtDateTime(r.createdAt)}{r.map ? <div className="muted small">{r.map}</div> : null}</td>
-                    <td className="nowrap">
-                      {r.targetName}
-                      <div className="mono small muted">{r.targetSteamId ?? 'SteamID 모름'}</div>
-                    </td>
-                    <td className="nowrap">{cat(r.category)}</td>
-                    <td className="small report-content">
-                      <div className="report-desc">{r.description}</div>
-                      {r.evidenceUrl ? <a className="link" href={r.evidenceUrl} target="_blank" rel="noopener noreferrer">증거 링크</a> : null}
-                    </td>
-                    <td className="small nowrap">
-                      {r.reporterChzzkName ? <div>{`${r.reporterChzzkName} (치지직)`}</div> : null}
-                      {r.reporterSteamName ? <div>{`${r.reporterSteamName} (스팀)`}</div> : null}
-                      {r.reporterSteamId ? <div className="mono muted">{r.reporterSteamId}</div> : null}
-                    </td>
-                    <td className="small nowrap">
-                      <span className={r.status === 'open' ? 'tag tag-danger' : 'tag'}>{STATUS_LABEL[r.status] ?? r.status}</span>
-                      {r.handledBy ? <div className="muted">{`${r.handledBy} · ${fmtDateTime(r.handledAt)}`}</div> : null}
-                      {r.note ? <div className="report-desc muted">{r.note}</div> : null}
-                    </td>
-                    {can('mod') ? <td><button className="btn btn-sm" type="button" onClick={() => handle(r)}>처리</button></td> : null}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <SortTable rows={data.reports} rowKey={(r) => r.id} initial={{ key: 'createdAt', dir: -1 }} columns={[
+              { key: 'createdAt', label: '시각', desc: true, sort: (r) => r.createdAt, className: 'nowrap', render: (r) => (
+                <>{fmtDateTime(r.createdAt)}{r.map ? <div className="muted small">{r.map}</div> : null}</>
+              ) },
+              { key: 'target', label: '대상', sort: (r) => r.targetName, className: 'nowrap', render: (r) => (
+                <>
+                  {r.targetName}
+                  <div className="mono small muted">{r.targetSteamId ?? 'SteamID 모름'}</div>
+                </>
+              ) },
+              { key: 'category', label: '유형', sort: (r) => cat(r.category), className: 'nowrap', render: (r) => cat(r.category) },
+              { key: 'description', label: '내용', className: 'small report-content', render: (r) => (
+                <>
+                  <div className="report-desc">{r.description}</div>
+                  {r.evidenceUrl ? <a className="link" href={r.evidenceUrl} target="_blank" rel="noopener noreferrer">증거 링크</a> : null}
+                </>
+              ) },
+              { key: 'reporter', label: '신고자', sort: (r) => r.reporterChzzkName ?? r.reporterSteamName ?? r.reporterSteamId, className: 'small nowrap', render: (r) => (
+                <>
+                  {r.reporterChzzkName ? <div>{`${r.reporterChzzkName} (치지직)`}</div> : null}
+                  {r.reporterSteamName ? <div>{`${r.reporterSteamName} (스팀)`}</div> : null}
+                  {r.reporterSteamId ? <div className="mono muted">{r.reporterSteamId}</div> : null}
+                </>
+              ) },
+              { key: 'status', label: '상태', sort: (r) => STATUS_LABEL[r.status] ?? r.status, className: 'small nowrap', render: (r) => (
+                <>
+                  <span className={r.status === 'open' ? 'tag tag-danger' : 'tag'}>{STATUS_LABEL[r.status] ?? r.status}</span>
+                  {r.handledBy ? <div className="muted">{`${r.handledBy} · ${fmtDateTime(r.handledAt)}`}</div> : null}
+                  {r.note ? <div className="report-desc muted">{r.note}</div> : null}
+                </>
+              ) },
+              ...(can('mod') ? [{ key: 'actions', label: <span className="sr-only">작업</span>, className: 'actions', render: (r: Report) => (
+                <button className="btn btn-sm" type="button" onClick={() => handle(r)}>처리</button>
+              ) }] : []),
+            ]} />
           </div>
         )}
       </div>

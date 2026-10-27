@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChangeEvent, FormEvent, HTMLAttributes, ReactNode } from 'react';
 import { charCount } from './format.ts';
+import { HoldButton } from '../components/holdButton.tsx';
 
 interface Dialog {
   id: number;
@@ -69,6 +70,7 @@ interface ModalOptions {
   fields?: Field[];
   confirm?: string;
   danger?: boolean;
+  hold?: boolean;
   wide?: boolean;
 }
 
@@ -94,7 +96,7 @@ function initial(f: Field): string | boolean {
 
 type Control = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
-function FormModal({ title, body = null, fields = [], confirm = '확인', danger = false, wide = false, onDone }: ModalOptions & { onDone: (v: FormValues | null) => void }) {
+function FormModal({ title, body = null, fields = [], confirm = '확인', danger = false, hold = false, wide = false, onDone }: ModalOptions & { onDone: (v: FormValues | null) => void }) {
   const [values, setValues] = useState<Record<string, string | boolean>>(() => Object.fromEntries(fields.map((f) => [f.name, initial(f)])));
   const [invalid, setInvalid] = useState<Record<string, boolean>>({});
   const refs = useRef<Record<string, Control | null>>({});
@@ -106,8 +108,7 @@ function FormModal({ title, body = null, fields = [], confirm = '확인', danger
 
   const set = (name: string, v: string | boolean) => setValues((s) => ({ ...s, [name]: v }));
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
+  const submit = () => {
     const out: FormValues = {};
     for (const f of fields) {
       const v = f.type === 'checkbox' ? values[f.name]! : String(values[f.name]).trim();
@@ -119,6 +120,11 @@ function FormModal({ title, body = null, fields = [], confirm = '확인', danger
       }
     }
     onDone(out);
+  };
+
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!hold) submit();
   };
 
   const cancel = () => onDone(null);
@@ -168,7 +174,8 @@ function FormModal({ title, body = null, fields = [], confirm = '확인', danger
         })}
         <div className="modal-actions">
           <button type="button" className="btn" onClick={cancel}>취소</button>
-          <button type="submit" ref={submitRef} className={danger ? 'btn btn-danger' : 'btn btn-primary'}>{confirm}</button>
+          {hold ? <HoldButton label={confirm} onConfirm={submit} />
+            : <button type="submit" ref={submitRef} className={danger ? 'btn btn-danger' : 'btn btn-primary'}>{confirm}</button>}
         </div>
       </form>
     </Overlay>

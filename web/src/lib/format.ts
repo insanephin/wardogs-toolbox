@@ -9,7 +9,8 @@ export const ACTION_LABELS: Record<string, string> = {
   whitelist_ban: '미연동 밴', whitelist_unban: '미연동 밴 해제', report_update: '신고 처리', unlink: '연동 해제', streamer_remove: '화이트리스트 해제', entry_gate_start: '입장 제한 시작', entry_gate_stop: '입장 제한 해제', entry_gate_open: '입장 제한 자동 해제', entry_gate_kick: '입장 제한 킥', turnover_update: '교대 입장 설정', turnover_start: '교대 입장 시작', turnover_kick: '교대 입장 킥', turnover_skip: '교대 입장 건너뜀 (관리자 조작)',
   rotation_add: '로테이션 추가', rotation_set_next: '다음 맵 예약', rotation_move: '로테이션 순서 변경', rotation_remove: '로테이션 삭제',
   rotation_settings: '로테이션 설정', rotation_jump: '로테이션 이동',
-  settings_update: '간편 설정 적용', sponsor_update: '스폰서 이미지 변경', rcon_update: 'RCON 연결 정보 변경', feed_token_copy: '피드 토큰 복사', preset_save: '프리셋 저장', preset_delete: '프리셋 삭제',
+  settings_update: '간편 설정 적용', sponsor_update: '스폰서 이미지 변경', rcon_update: 'RCON 연결 정보 변경', feed_token_copy: '피드 토큰 복사', feed_token_rotate: '피드 토큰 재발급',
+  server_create: '서버 추가', server_update: '서버 이름 변경', member_add: '관리자 추가', member_role: '권한 변경', member_remove: '관리자 삭제', preset_save: '프리셋 저장', preset_delete: '프리셋 삭제',
 };
 
 export const TAG_LABELS: Record<string, string> = {
@@ -83,13 +84,23 @@ export function pct(part: number, whole: number): number | null {
   return whole ? Math.round((part / whole) * 100) : null;
 }
 
+export const STEAM_ID = /^\d{17}$/;
+
 export const charCount = (s: string): number => [...s].length;
+
+export const killParts = (e: FeedEvent) => ({
+  killer: e.killerName || e.killerSteamId || '환경',
+  victim: e.victimName || e.victimSteamId || '?',
+  extra: `${e.weapon ? ` · ${e.weapon}` : ''}${e.distanceM != null ? ` · ${fmtDist(e.distanceM)}` : ''}`,
+});
 
 export function describeEvent(e: FeedEvent): string {
   switch (e.type) {
-    case 'killed': return e.suicide
-      ? `자살: ${e.victimName || e.victimSteamId || '?'}`
-      : `킬: ${e.killerName || e.killerSteamId || '환경'} → ${e.victimName || e.victimSteamId || '?'}${e.weapon ? ` · ${e.weapon}` : ''}${e.distanceM != null ? ` · ${fmtDist(e.distanceM)}` : ''}`;
+    case 'killed': {
+      if (e.suicide) return `자살: ${e.victimName || e.victimSteamId || '?'}`;
+      const k = killParts(e);
+      return `킬: ${k.killer} → ${k.victim}${k.extra}`;
+    }
     case 'player_joined': return `입장: ${e.playerName} (현재 ${e.players}명)`;
     case 'player_left': return `퇴장: ${e.playerName} (현재 ${e.players}명)`;
     case 'match_state': return `매치 상태: ${(e.state && STATE_LABELS[e.state]) ?? e.state}${e.mapName ? ` · ${e.mapName}` : ''}`;

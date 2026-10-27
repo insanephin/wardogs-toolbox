@@ -1,46 +1,44 @@
 import { randomBytes } from 'node:crypto';
+import { ROLES } from './store.ts';
+import { STEAM_ID } from './http.ts';
+import type { Role } from './store.ts';
 
-const ROLES = { viewer: 1, mod: 2, admin: 3 };
+const RANK: Record<Role, number> = Object.fromEntries(ROLES.map((r, i) => [r, i + 1])) as Record<Role, number>;
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
-export type Role = keyof typeof ROLES;
+export type { Role };
 
 export interface Session {
-  channelId: string;
+  steamId: string;
   name: string;
-  role: Role;
+  superadmin: boolean;
   expires: number;
 }
 
-const isRole = (r: string): r is Role => Object.hasOwn(ROLES, r);
+export const isRole = (r: unknown): r is Role => typeof r === 'string' && Object.hasOwn(RANK, r);
 
-export function parseAdmins(spec: string): Map<string, Role> {
-  const admins = new Map<string, Role>();
-  for (const raw of spec.split(',').map((s) => s.trim()).filter(Boolean)) {
-    const [id = '', role = 'admin'] = raw.split(':');
-    if (!/^[0-9a-f]{32}$/.test(id) || !isRole(role)) {
-      throw new Error(`ADMIN_CHZZK_IDS entry "${raw}" must be a 32-character Chzzk channel ID, optionally :viewer|mod|admin`);
-    }
-    admins.set(id, role);
+export function parseSuperadmins(spec: string): Set<string> {
+  const ids = new Set<string>();
+  for (const id of spec.split(',').map((s) => s.trim()).filter(Boolean)) {
+    if (!STEAM_ID.test(id)) throw new Error(`SUPERADMIN_STEAM_IDS entry "${id}" must be a 17-digit SteamID64`);
+    ids.add(id);
   }
-  return admins;
+  return ids;
 }
 
 export class Auth {
-  admins: Map<string, Role>;
+  superadmins: Set<string>;
   sessions = new Map<string, Session>();
 
-  constructor(adminSpec: string) {
-    this.admins = parseAdmins(adminSpec);
+  constructor(superadminSpec: string) {
+    this.superadmins = parseSuperadmins(superadminSpec);
   }
 
-  login(channelId: string, channelName: string): string | null {
-    const role = this.admins.get(channelId);
-    if (!role) return null;
+  login(steamId: string, name: string): string {
     const now = Date.now();
     for (const [k, s] of this.sessions) if (s.expires < now) this.sessions.delete(k);
     const id = randomBytes(32).toString('base64url');
-    this.sessions.set(id, { channelId, name: channelName || channelId, role, expires: now + SESSION_TTL_MS });
+    this.sessions.set(id, { steamId, name: name || steamId, superadmin: this.superadmins.has(steamId), expires: now + SESSION_TTL_MS });
     return id;
   }
 
@@ -60,6 +58,6 @@ export class Auth {
   }
 }
 
-export function hasRole(session: Session | null, needed: Role): boolean {
-  return !!session && ROLES[session.role] >= ROLES[needed];
+export function hasRole(role: Role | null | undefined, needed: Role): boolean {
+  return !!role && RANK[role] >= RANK[needed];
 }

@@ -1,8 +1,9 @@
 import type { RconClient, RconError, GameStatus, GamePlayer } from './rcon.ts';
-import type { Store, MatchPlayerDelta } from './store.ts';
+import type { ServerStore as Store, MatchPlayerDelta, DiscordLink } from './store.ts';
 import type { FeedProcessor } from './feed.ts';
 import { errorMessage } from './http.ts';
 import type { Emit } from './http.ts';
+import { readSettings } from './settings.ts';
 import type { SteamProfiles } from './steam.ts';
 
 const WATCHED_MS = 2000;
@@ -10,6 +11,7 @@ const IDLE_MS = 10_000;
 const EMPTY_MS = 30_000;
 const HEALTH_EVERY_MS = 30_000;
 const CAPS_EVERY_MS = 60 * 60 * 1000;
+const CONFIG_EVERY_MS = 60_000;
 const MAP_CHANGE_GRACE_MS = 45_000;
 const NAME_SETTLE_MS = 60_000;
 const RESTART_AFTER_SEC = 24 * 3600;
@@ -43,6 +45,8 @@ interface PollerOptions {
   emit: Emit;
   watchers: () => number;
   steam?: SteamProfiles;
+  onServerId?: (id: string) => void;
+  onServerName?: (name: string) => void;
 }
 
 export class Poller {
@@ -84,11 +88,18 @@ export class Poller {
   rotation: Record<string, any> | null = null;
   rotationStale = true;
   lastCapsAt = 0;
+  passworded: boolean | null = null;
+  lastConfigAt = 0;
   timer: NodeJS.Timeout | undefined;
   ticking = false;
   stopped = false;
 
-  constructor({ rcon, store, feed, emit, watchers, steam }: PollerOptions) {
+  onServerId: (id: string) => void;
+  onServerName: (name: string) => void;
+
+  constructor({ rcon, store, feed, emit, watchers, steam, onServerId = () => {}, onServerName = () => {} }: PollerOptions) {
+    this.onServerId = onServerId;
+    this.onServerName = onServerName;
     this.steam = steam;
     this.rcon = rcon;
     this.store = store;
@@ -106,6 +117,10 @@ export class Poller {
     this.stopped = true;
     clearTimeout(this.timer);
     this.flushScoreboard();
+  }
+
+  recheckConfig() {
+    this.lastConfigAt = 0;
   }
 
   nudge() {
@@ -132,6 +147,7 @@ export class Poller {
         this.lastCapsAt = now;
         const f = this.rcon.features;
         this.serverId = f.serverId ? await this.rcon.serverId().catch(() => null) : null;
+        if (this.serverId) this.onServerId(this.serverId);
         this.version = f.version ? await this.rcon.version().catch(() => null) : null;
         this.emit('capabilities', this.capabilitiesView());
       }
@@ -154,6 +170,11 @@ export class Poller {
       }
 
       this.status = status;
+      if (status.serverName) this.onServerName(status.serverName);
+      if (now - this.lastConfigAt > CONFIG_EVERY_MS) {
+        this.passworded = await this.rcon.config().then((d) => !!String(readSettings(d.text).serverPassword ?? '').trim(), () => this.passworded);
+        this.lastConfigAt = now;
+      }
       if (this.rotationStale && this.rcon.features.rotation) {
         this.rotation = await this.rcon.rotation().catch(() => this.rotation);
         this.rotationStale = false;
@@ -164,10 +185,11 @@ export class Poller {
       this.sampleCash(now);
       this.online = true;
       this.lastError = null;
+      const streamers = this.streamersOnline();
       await this.enforcePendingBans();
-      await this.enforceTurnover(now);
-      await this.enforceEntryGate(now);
-      await this.enforceWhitelist(now);
+      await this.enforceTurnover(now, streamers);
+      await this.enforceEntryGate(now, streamers);
+      await this.enforceWhitelist(now, streamers);
     } catch (err) {
       const e = err as RconError;
       this.online = e.status === 429 ? this.online : false;
@@ -312,10 +334,9 @@ export class Poller {
     }
   }
 
-  async enforceEntryGate(now: number): Promise<void> {
+  async enforceEntryGate(now: number, streamers: Map<string, DiscordLink>): Promise<void> {
     const gate = this.store.entryGate();
     if (!gate.active) return;
-    const streamers = this.store.discordLinksBySteam(this.steamIds());
     const online = this.players.filter((p) => p.steamId && streamers.has(p.steamId)).length;
     const why = online >= gate.threshold ? 'threshold' : gate.openAt && now >= gate.openAt ? 'timeout' : null;
     if (why) {
@@ -384,7 +405,7 @@ export class Poller {
     return limit ? Math.max(WHITELIST_PER_TICK, Math.floor((limit * 2) / 3) - 5) : Infinity;
   }
 
-  async enforceTurnover(now: number): Promise<void> {
+  async enforceTurnover(now: number, streamers: Map<string, DiscordLink>): Promise<void> {
     const { enabled, message } = this.store.turnover();
     if (!enabled) {
       this.turnoverPending.clear();
@@ -399,7 +420,6 @@ export class Poller {
       this.turnoverNextTry.clear();
       return;
     }
-    const streamers = this.store.discordLinksBySteam(this.steamIds());
     const targets = this.players.filter((p): p is GamePlayer & { steamId: string } => !!p.steamId
       && !streamers.has(p.steamId)
       && (this.turnoverPending.has(p.steamId) || (this.turnoverBlocked.get(p.steamId) ?? 0) > now)
@@ -431,13 +451,12 @@ export class Poller {
     };
   }
 
-  entryGateView() {
+  entryGateView(streamers = this.streamersOnline()) {
     const gate = this.store.entryGate();
-    const streamers = this.store.discordLinksBySteam(this.steamIds());
     return { ...gate, streamersOnline: this.players.filter((p) => p.steamId && streamers.has(p.steamId)).length };
   }
 
-  async enforceWhitelist(now: number): Promise<void> {
+  async enforceWhitelist(now: number, streamers: Map<string, DiscordLink>): Promise<void> {
     const { mode, message } = this.store.whitelist();
     let budget = WHITELIST_PER_TICK;
 
@@ -458,7 +477,6 @@ export class Poller {
 
     if (mode === 'off' || !this.players.length) return;
     const linked = this.store.linksBySteam(this.steamIds());
-    const streamers = this.store.discordLinksBySteam(this.steamIds());
     for (const p of this.players) {
       if (!budget) return;
       if (!p.steamId || linked.has(p.steamId) || streamers.has(p.steamId)) continue;
@@ -506,9 +524,8 @@ export class Poller {
     };
   }
 
-  playersView() {
+  playersView(streamers: Map<string, DiscordLink>) {
     const links = this.store.linksBySteam(this.steamIds());
-    const streamers = this.store.discordLinksBySteam(this.steamIds());
     return this.players.map((p) => ({
       ...p,
       joinedAt: (p.steamId && this.joinedAt.get(p.steamId)) || null,
@@ -516,6 +533,10 @@ export class Poller {
       streamer: (p.steamId && streamers.get(p.steamId)) || null,
       avatar: (p.steamId && this.steam?.cached(p.steamId)?.avatar) || null,
     }));
+  }
+
+  streamersOnline(): Map<string, DiscordLink> {
+    return this.store.discordLinksBySteam(this.steamIds());
   }
 
   steamIds(): string[] {
@@ -534,13 +555,14 @@ export class Poller {
 
   snapshot() {
     const now = Date.now();
+    const streamers = this.streamersOnline();
     return {
       online: this.online,
       lastError: this.lastError,
       lastPollAt: this.lastPollAt,
       intervalMs: this.intervalMs,
       status: this.status,
-      players: this.playersView(),
+      players: this.playersView(streamers),
       health: this.health,
       restart: this.restartView(),
       match: this.matchView(),
@@ -552,7 +574,7 @@ export class Poller {
       matchStats: this.store.matchStats(this.feed.matchKey),
       nextMap: this.nextMapView(),
       rotationEnabled: this.rotation ? this.rotation.enabled !== false : null,
-      entryGate: this.entryGateView(),
+      entryGate: this.entryGateView(streamers),
       turnover: this.turnoverView(),
     };
   }

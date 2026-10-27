@@ -1,11 +1,12 @@
 import asyncio, logging, time
 from typing import Callable
+from aiohttp import ClientResponseError
 from discord import Interaction
 from discord.ui import LayoutView
 from discord.ext import commands
 from configparser import ConfigParser
 from utils.models import TicketState
-from utils.view import ErrorView, SuccessView, VerifyView
+from utils.view import ErrorView, VerifyView, DoneView
 from utils.http import DashboardClient
 
 
@@ -30,21 +31,26 @@ class Verify(commands.Cog):
             return False
         return True
 
-    async def start_streamer(self, interaction: Interaction):
+    async def start_streamer(self, interaction: Interaction, server_id: int | None):
         if not await self._guard(interaction):
             return
+        if server_id is None:
+            return await interaction.response.send_message(view=ErrorView("오래된 패널입니다. 관리자에게 `/패널`로 새 패널을 올려달라고 요청해주세요."), ephemeral=True)
         try:
-            ticket = await self.client.create_ticket(interaction.user.id, interaction.user.display_name)
-        except Exception:
+            ticket = await self.client.create_ticket(server_id, interaction.user.id, interaction.user.display_name)
+        except Exception as e:
+            if isinstance(e, ClientResponseError) and e.status == 404:
+                return await interaction.response.send_message(view=ErrorView("이 패널의 서버가 삭제되었습니다. 관리자에게 문의해주세요."), ephemeral=True)
             logger.error("Failed to create verify ticket", exc_info=True)
             return await interaction.response.send_message(view=ErrorView("지금은 인증 서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요."), ephemeral=True)
 
         def render(state: TicketState) -> LayoutView:
             accounts = f"치지직 **{state.chzzk_name}** · 스팀 **{state.steam_name}**" if state.chzzk_name else f"스팀 **{state.steam_name}**"
+            server = f"**{ticket.server.name}** " if ticket.server else ""
             if state.result == "reserved":
-                return SuccessView(f"{accounts}(으)로 화이트리스트 등록을 완료했습니다. 서버 접속 우선권이 적용되었습니다.")
+                return DoneView(ticket, f"{accounts}(으)로 화이트리스트 등록을 완료했습니다. {server}서버 접속 우선권이 적용되었습니다.")
             if state.result == "queued":
-                return SuccessView(f"{accounts}(으)로 화이트리스트 등록을 완료했습니다. 게임 서버에 연결되는 대로 접속 우선권이 적용됩니다.")
+                return DoneView(ticket, f"{accounts}(으)로 화이트리스트 등록을 완료했습니다. {server}게임 서버에 연결되는 대로 접속 우선권이 적용됩니다.")
             if state.done:
                 return ErrorView("인증 링크가 만료되었습니다. 패널의 인증하기 버튼을 다시 눌러주세요.")
             if state.result == "taken":

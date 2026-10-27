@@ -44,11 +44,10 @@ export function CashCard() {
         <button type="button" role="radio" aria-checked={view === 'table'} className={view === 'table' ? 'on' : ''} onClick={() => setView('table')}>표</button>
       </div>
     }>
-      <div className="card-body stack">
-        {unreliable ? <Empty>이 호스트는 모든 플레이어의 돈을 0으로 보고해 추이를 그리지 않습니다.</Empty>
-          : !points.length ? <Empty>아직 표본이 없습니다. 플레이어가 있는 동안 1분마다 기록합니다.</Empty>
+      <div className="card-body">
+        {unreliable ? <Empty>이 호스트는 돈을 0으로 보고합니다.</Empty>
+          : !points.length ? <Empty>기록이 없습니다.</Empty>
             : view === 'chart' ? <Chart points={points} factions={factions} /> : <Table points={points} factions={factions} />}
-        <p className="muted small">이번 매치 동안 1분마다 진영별 소지금 합계를 기록합니다 (최대 6시간). 매치가 바뀌면 새로 시작합니다.</p>
       </div>
     </Card>
   );

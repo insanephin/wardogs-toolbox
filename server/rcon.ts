@@ -151,6 +151,7 @@ export class RconClient {
       method,
       headers: { Authorization: `Bearer ${this.password}`, ...headers },
       signal: AbortSignal.timeout(this.timeoutMs),
+      redirect: 'manual',
     };
     if (json !== undefined) {
       init.headers['Content-Type'] = 'application/json';

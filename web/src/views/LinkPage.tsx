@@ -11,7 +11,8 @@ interface LinkState {
   chzzk: string | null;
   steam: string | null;
   link: Link | null;
-  joinUrl: string | null;
+  joins: { id: number; name: string; url: string }[];
+  server: { name: string; joinCode: string } | null;
 }
 
 const STEPS: { id: Provider; label: string }[] = [
@@ -47,18 +48,21 @@ function resultText(r: string, p: string, via: string): { ok: boolean; text: str
   }
 }
 
-export default function LinkPage() {
+export default function LinkPage({ code, onServer }: { code: string | null; onServer: (name: string | null) => void }) {
   const [st, setSt] = useState<LinkState | null>(null);
   const [error, setError] = useState('');
   const [notice] = useState(() => {
     const q = new URLSearchParams(location.search);
-    return q.get('r') && location.pathname === '/' ? resultText(q.get('r')!, q.get('p') ?? '', q.get('via') ?? '') : null;
+    return q.get('r') && !/\/report\/?$/.test(location.pathname) ? resultText(q.get('r')!, q.get('p') ?? '', q.get('via') ?? '') : null;
   });
   const [fromDiscord] = useState(() => new URLSearchParams(location.search).get('p') === 'discord');
 
   useEffect(() => {
-    call<LinkState>('GET', '/api/link/me').then(setSt, (e) => setError(e.message));
-  }, []);
+    call<LinkState>('GET', `/api/link/me${code ? `?${new URLSearchParams({ server: code })}` : ''}`).then((r) => {
+      setSt(r);
+      onServer(r.server?.name ?? null);
+    }, (e) => setError(e.message));
+  }, [code]);
 
   const link = st?.link;
   if (fromDiscord && notice) {
@@ -82,7 +86,7 @@ export default function LinkPage() {
           <li>이 페이지는 <b>일반 시청자용</b>입니다. 화이트리스트는 디스코드에서 스팀 로그인으로 등록하세요.</li>
           <li>스팀은 <b>워독스를 보유한 계정</b>으로 로그인하세요.</li>
           <li>한 번 등록하면 <b>직접 해제하거나 다른 계정으로 바꿀 수 없습니다.</b></li>
-          <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href="/report" onClick={followLink}>신고하기</a>로 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
+          <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href={`${code ? `/${encodeURIComponent(code)}` : ''}/report`} onClick={followLink}>신고하기</a>로 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
         </ul>
       </div>
 
@@ -98,7 +102,7 @@ export default function LinkPage() {
                   {!st.configured[id] ? <span className="link-step-status muted small">준비 중</span>
                     : link ? <span className="link-step-status ok-text small">연동됨</span>
                     : st[id] ? <span className="link-step-status ok-text small">확인됨</span>
-                      : <a className="btn btn-sm btn-block btn-primary" href={`/auth/${id}`}>로그인</a>}
+                      : <a className="btn btn-sm btn-block btn-primary" href={`/auth/${id}${code ? `?${new URLSearchParams({ s: code })}` : ''}`}>로그인</a>}
                 </li>
               );
             })}
@@ -106,9 +110,11 @@ export default function LinkPage() {
           {link ? (
             <>
               <p className="public-lead small">{`${fmtTime(link.linkedAt)}에 등록되었습니다.`}</p>
-              {st.joinUrl ? (
-                <a className="btn btn-block btn-primary" href={st.joinUrl} target="_blank" rel="noopener noreferrer">서버 접속</a>
-              ) : <p className="public-lead small">지금은 서버에 접속할 수 없습니다.</p>}
+              {st.joins.length ? st.joins.map((j) => (
+                <a key={j.id} className="btn btn-block btn-primary" href={j.url} target="_blank" rel="noopener noreferrer">
+                  {st.joins.length > 1 ? `${j.name} 접속` : '서버 접속'}
+                </a>
+              )) : <p className="public-lead small">지금은 서버에 접속할 수 없습니다.</p>}
             </>
           ) : st.chzzk || st.steam ? (
             <p className="public-lead small">{`${st.chzzk ? '스팀' : '치지직'}에도 로그인하면 연동이 완료됩니다.`}</p>

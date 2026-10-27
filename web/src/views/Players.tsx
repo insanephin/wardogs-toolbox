@@ -4,28 +4,13 @@ import { useStore, getState, can, serves } from '../lib/store.ts';
 import { api, run } from '../lib/api.ts';
 import { modal, confirmAction, openDialog, Overlay } from '../lib/modal.tsx';
 import { fmtNum, fmtDuration, fmtTime, pct } from '../lib/format.ts';
-import { Card, Empty, FactionChip, Fdot, Avatar, useNow, useFactionColor } from '../components/common.tsx';
-
-type SortKey = 'name' | 'linked' | 'faction' | 'kills' | 'deaths' | 'kd' | 'hs' | 'cash' | 'pingMs' | 'session';
-
-const COLUMNS: { key: SortKey; label: string; num?: boolean }[] = [
-  { key: 'name', label: '플레이어' },
-  { key: 'linked', label: '연동' },
-  { key: 'faction', label: '진영' },
-  { key: 'kills', label: '킬', num: true },
-  { key: 'deaths', label: '데스', num: true },
-  { key: 'kd', label: 'K/D', num: true },
-  { key: 'hs', label: 'HS%', num: true },
-  { key: 'cash', label: '돈', num: true },
-  { key: 'pingMs', label: '핑', num: true },
-  { key: 'session', label: '접속', num: true },
-];
+import { Card, PageActions, Empty, FactionChip, Fdot, Avatar, useNow, useFactionColor } from '../components/common.tsx';
+import { SortTable } from '../components/sortTable.tsx';
 
 export default function Players() {
   const live = useStore((s) => s.live);
   const color = useFactionColor();
   const now = useNow();
-  const [sort, setSort] = useState<{ key: SortKey; dir: number }>({ key: 'kills', dir: -1 });
   const [faction, setFaction] = useState('');
   const [search, setSearch] = useState('');
 
@@ -43,11 +28,6 @@ export default function Players() {
         session: p.joinedAt ? (now - p.joinedAt) / 1000 : null,
         linked: p.streamer ? `0${p.streamer.discordName ?? ''}` : p.link ? `1${p.link.chzzkName ?? p.link.chzzkChannelId}` : '',
       };
-    })
-    .sort((a, b) => {
-      const av = a[sort.key] ?? -1;
-      const bv = b[sort.key] ?? -1;
-      return (typeof av === 'string' ? av.localeCompare(String(bv)) : av - Number(bv)) * sort.dir;
     });
 
   const factionNames = (live?.status?.factionScores || []).map((f) => f.name);
@@ -55,7 +35,8 @@ export default function Players() {
   for (const p of live?.players || []) counts[p.faction ?? ''] = (counts[p.faction ?? ''] ?? 0) + 1;
 
   return (
-    <Card title="접속 중인 플레이어" extra={<span className="muted small">{live?.status ? `${live.status.players.current} / ${live.status.players.max}명` : ''}</span>}>
+    <Card>
+      <PageActions><span className="muted small">{live?.status ? `${live.status.players.current} / ${live.status.players.max}명 접속` : ''}</span></PageActions>
       <div className="toolbar">
         <input type="search" placeholder="이름, SteamID 또는 치지직" aria-label="플레이어 검색" value={search} onChange={(e) => setSearch(e.target.value)} />
         <div className="seg" role="group" aria-label="진영 필터">
@@ -72,44 +53,24 @@ export default function Players() {
           {!list.length ? (
             <Empty>{live?.mapTransition ? '맵 로딩 중이라 플레이어 목록이 비어 보입니다.' : '조건에 맞는 플레이어가 없습니다.'}</Empty>
           ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  {COLUMNS.map((c) => {
-                    const active = sort.key === c.key;
-                    return (
-                      <th key={c.key} className={c.num ? 'num' : ''} aria-sort={active ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none'}>
-                        <button type="button" className="th-sort" onClick={() => setSort({ key: c.key, dir: active ? -sort.dir : c.num ? -1 : 1 })}>
-                          {c.label}{active ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}
-                        </button>
-                      </th>
-                    );
-                  })}
-                  <th><span className="sr-only">작업</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.map((p) => (
-                  <tr key={p.steamId}>
-                    <td><div className="who"><Avatar src={p.avatar} /><div><div className="pname">{p.name}</div><div className="mono muted small">{p.steamId}</div></div></div></td>
-                    <td><LinkCell link={p.link} streamer={p.streamer} /></td>
-                    <td><FactionChip name={p.faction} color={color(p.faction)} /></td>
-                    <td className="num">{p.kills}</td>
-                    <td className="num">{p.deaths}</td>
-                    <td className="num">{p.kd.toFixed(2)}</td>
-                    <td className={`num${(p.hs ?? 0) >= 60 ? ' warn-text' : ''}`}>{p.hs == null ? '—' : `${p.hs}%`}</td>
-                    <td className="num">{live?.cashUnreliable ? '—' : fmtNum(p.cash)}</td>
-                    <td className={`num ping-${p.pingMs >= 200 ? 'bad' : p.pingMs >= 120 ? 'mid' : 'ok'}`}>{p.pingMs}ms</td>
-                    <td className="num">{fmtDuration(p.session)}</td>
-                    <td className="actions"><button className="btn btn-sm" type="button" onClick={() => openPlayer(p)}>관리</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <SortTable rows={list} rowKey={(p) => p.steamId} initial={{ key: 'kills', dir: -1 }} columns={[
+              { key: 'name', label: '플레이어', sort: (p) => p.name, render: (p) => (
+                <div className="who"><Avatar src={p.avatar} /><div><div className="pname">{p.name}</div><div className="mono muted small">{p.steamId}</div></div></div>
+              ) },
+              { key: 'linked', label: '연동', sort: (p) => p.linked, render: (p) => <LinkCell link={p.link} streamer={p.streamer} /> },
+              { key: 'faction', label: '진영', sort: (p) => p.faction, render: (p) => <FactionChip name={p.faction} color={color(p.faction)} /> },
+              { key: 'kills', label: '킬', num: true, sort: (p) => p.kills, render: (p) => p.kills },
+              { key: 'deaths', label: '데스', num: true, sort: (p) => p.deaths, render: (p) => p.deaths },
+              { key: 'kd', label: 'K/D', num: true, sort: (p) => p.kd, render: (p) => p.kd.toFixed(2) },
+              { key: 'hs', label: 'HS%', num: true, sort: (p) => p.hs, render: (p) => <span className={(p.hs ?? 0) >= 60 ? 'warn-text' : undefined}>{p.hs == null ? '—' : `${p.hs}%`}</span> },
+              { key: 'cash', label: '돈', num: true, sort: (p) => p.cash, render: (p) => (live?.cashUnreliable ? '—' : fmtNum(p.cash)) },
+              { key: 'pingMs', label: '핑', num: true, sort: (p) => p.pingMs, render: (p) => <span className={`ping-${p.pingMs >= 200 ? 'bad' : p.pingMs >= 120 ? 'mid' : 'ok'}`}>{p.pingMs}ms</span> },
+              { key: 'session', label: '접속', num: true, sort: (p) => p.session, render: (p) => fmtDuration(p.session) },
+              { key: 'actions', label: <span className="sr-only">작업</span>, className: 'actions', render: (p) => <button className="btn btn-sm" type="button" onClick={() => openPlayer(p)}>관리</button> },
+            ]} />
           )}
         </div>
       </div>
-      <p className="card-foot muted small">플레이어는 항상 SteamID로 식별합니다. 접속 직후 1분은 클랜 태그가 붙기 전이라 이름이 바뀔 수 있고, 익명 모드는 같은 이름이 여럿일 수 있습니다.</p>
     </Card>
   );
 }
@@ -117,9 +78,7 @@ export default function Players() {
 function LinkCell({ link, streamer }: { link: Link | null; streamer: Streamer | null }) {
   if (streamer) return <div className="small"><span className="tag tag-streamer">화이트리스트</span>{link ? `치지직 ${link.chzzkName || link.chzzkChannelId}` : streamer.discordName}</div>;
   if (!link) return <span className="tag tag-danger">미연동</span>;
-  return (
-    <div className="small">{`치지직 ${link.chzzkName || link.chzzkChannelId}`}</div>
-  );
+  return <div className="small">{`치지직 ${link.chzzkName || link.chzzkChannelId}`}</div>;
 }
 
 async function openPlayer(p: Player) {
@@ -167,7 +126,7 @@ function PlayerDialog({ p, profile, close }: { p: Player; profile: PlayerProfile
             <button type="button" className="btn btn-danger-outline" onClick={act(() => kick(p))}>킥</button>
             <button type="button" className="btn btn-danger-outline" onClick={act(() => ban(p))}>밴</button>
           </div>
-        ) : <p className="muted small">뷰어 권한은 조회만 가능합니다.</p>}
+        ) : null}
       </div>
       <div className="modal-actions"><button ref={closeRef} className="btn" type="button" onClick={close}>닫기</button></div>
     </Overlay>
@@ -188,7 +147,7 @@ function InfoTable({ link, streamer, seen }: { link: Link | null; streamer: Stre
           <th scope="row">치지직</th>
           <td>{link
             ? <a className="link" href={`https://chzzk.naver.com/${link.chzzkChannelId}`} target="_blank" rel="noopener noreferrer">{link.chzzkName || link.chzzkChannelId}</a>
-            : <><span className="tag tag-danger">미연동</span> <span className="muted">연동 페이지(/)에서 연동하지 않았습니다.</span></>}</td>
+            : <span className="tag tag-danger">미연동</span>}</td>
         </tr>
         {link ? <tr><th scope="row">스팀 이름</th><td>{link.steamName ?? '—'}</td></tr> : null}
         <tr><th scope="row">인증 시간</th><td>{fmtTime(link?.linkedAt)}</td></tr>
@@ -223,7 +182,7 @@ async function moveFaction(p: Player) {
   const options = (getState().live?.status?.factionScores || []).filter((f) => f.name !== p.faction).map((f) => ({ value: f.name, label: f.name }));
   const v = await modal({
     title: `${p.name} 진영 이동`,
-    body: <p className="muted small">이동 후 새 진영에서 리스폰하도록 사망 처리됩니다. Season 2에서는 한 팀이 10점 넘게 앞설 때 게임 자체 팀 변경 제한(15분)이 걸려 있을 수 있습니다.</p>,
+    body: <p className="muted small">이동 후 사망 처리됩니다.</p>,
     fields: [{ name: 'faction', label: '옮길 진영', type: 'select', options }],
     confirm: '이동',
   });
@@ -232,8 +191,8 @@ async function moveFaction(p: Player) {
 
 async function ban(p: Player) {
   const v = await modal({
-    title: `${p.name ?? p.steamId} 밴`, danger: true, confirm: '밴',
-    body: <p className="muted small">밴 후 즉시 킥합니다. 해제는 접속 관리 › 밴·예약 슬롯 탭에서 할 수 있습니다.</p>,
+    title: `${p.name ?? p.steamId} 밴`, danger: true, hold: true, confirm: '밴',
+    body: <p className="muted small">밴 후 즉시 킥합니다.</p>,
     fields: [{ name: 'reason', label: '사유', max: 200 }],
   });
   if (v) await run('밴', 'POST', '/api/bans', { steamId: p.steamId, reason: v.reason });

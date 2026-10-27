@@ -86,9 +86,7 @@ export default function Config() {
 
   return (
     <>
-      <div className="banner banner-warn">
-        적용은 문서 전체를 교체합니다. 지운 섹션은 서버에서도 삭제됩니다. 손대지 않은 값도 다시 검증되므로 오래된 값 하나가 전체 적용을 막을 수 있습니다. 항상 불러온 문서를 고쳐서 검증 후 적용하세요.
-      </div>
+      <div className="banner banner-warn">적용 시 문서 전체를 교체합니다. 지운 섹션은 서버에서도 삭제됩니다.</div>
       <div className="grid-main">
         <Card title="ServerSettings.ini" extra={<span className="muted small">{meta}</span>}>
           <div className="toolbar">
@@ -103,14 +101,7 @@ export default function Config() {
         </Card>
         <div className="stack">
           <Card title="검증·적용 결과"><div className="card-body"><div className="stack"><ResultPanel panel={panel} /></div></div></Card>
-          <Card title="참고">
-            <div className="card-body small stack">
-              <p>ScorePeriod는 18~30초, 다음 매치부터 적용. MaxPlayers는 즉시, RCON 섹션은 다음 재시작 때 적용됩니다.</p>
-              <p>배열 키의 !Key=ClearArray는 "기존 배열 비우기" 명령이지 항목이 아닙니다.</p>
-              <p>Season 2의 이벤트 피드 키(bEventFeedEnabled, EventFeedEndpoints, EventFeedServerName)는 RCON으로 쓸 수 없어 적용 시 조용히 빠집니다. 호스트 파일에 직접 넣고 재시작하세요.</p>
-              <Locked doc={doc} />
-            </div>
-          </Card>
+          <Locked doc={doc} />
         </div>
       </div>
     </>
@@ -133,10 +124,9 @@ function Locked({ doc }: { doc: ConfigDoc | null }) {
   }
   if (!locked.length) return null;
   return (
-    <div>
-      <p className="strong">고정된 키 (명령줄 인자로 잠김, 바꿔도 적용 안 됨):</p>
-      <ul className="plain-list mono">{locked.map((l) => <li key={l}>{l}</li>)}</ul>
-    </div>
+    <Card title="고정된 키">
+      <div className="card-body small"><ul className="plain-list mono">{locked.map((l) => <li key={l}>{l}</li>)}</ul></div>
+    </Card>
   );
 }
 
@@ -153,7 +143,7 @@ function List({ title, items, cls }: { title: string; items: unknown[] | undefin
 function ResultPanel({ panel }: { panel: Panel | null }) {
   if (!panel) return null;
   if (!panel.result) {
-    return panel.warnings?.length ? <List title="경고" items={panel.warnings} /> : <Empty>검증을 실행하면 결과가 여기 표시됩니다.</Empty>;
+    return panel.warnings?.length ? <List title="경고" items={panel.warnings} /> : <Empty>검증 결과가 없습니다.</Empty>;
   }
   const { result: r, applied } = panel;
   const removed = (r.changed || []).filter((c) => c.removed);

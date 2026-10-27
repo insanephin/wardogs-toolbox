@@ -1,6 +1,6 @@
 import { weaponName } from './weapons.ts';
 import type { WeaponNames } from './weapons.ts';
-import type { Store, Kill, MatchEvent, OpenEngagement, Engagement } from './store.ts';
+import type { ServerStore as Store, Kill, MatchEvent, OpenEngagement, Engagement } from './store.ts';
 import type { Emit } from './http.ts';
 
 const IGNORED_TAGS = new Set(['Kill', 'Death']);

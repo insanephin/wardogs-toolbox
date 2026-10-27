@@ -1,10 +1,44 @@
-export type Role = 'viewer' | 'mod' | 'admin';
+export type Role = 'viewer' | 'mod' | 'admin' | 'owner';
 
 export type OrError<T> = (T & { error?: undefined }) | { error: string };
 
-export interface Me {
+export interface ServerSummary {
+  id: number;
   name: string;
   role: Role;
+  public: boolean;
+  passworded: boolean | null;
+  joinCode: string | null;
+  online: boolean;
+  gameName: string | null;
+  players: number;
+}
+
+export interface Me {
+  steamId: string;
+  name: string;
+  avatar: string | null;
+  superadmin: boolean;
+  servers: ServerSummary[];
+}
+
+export interface Member {
+  steamId: string;
+  role: Role;
+  name: string | null;
+  avatar: string | null;
+  addedAt: number;
+  addedBy: string | null;
+  lastLoginAt: number | null;
+}
+
+export type IdentityProvider = 'discord' | 'chzzk' | 'twitch';
+
+export interface Account {
+  steamId: string;
+  name: string;
+  identities: { provider: IdentityProvider; providerId: string; name: string | null; linkedAt: number }[];
+  providers: Record<IdentityProvider, boolean>;
 }
 
 export interface Link {

@@ -11,13 +11,15 @@ interface MyReport {
   createdAt: number;
   targetName: string;
   status: string;
+  serverName: string | null;
 }
 
 interface ReportState {
   configured: boolean;
   reporter: string | null;
   mine: MyReport[];
-  online: string[];
+  servers: { id: number; name: string }[];
+  online: Record<number, string[]>;
 }
 
 const STATUS: Record<string, { label: string; cls: string }> = {
@@ -35,16 +37,20 @@ function signInError(r: string | null): string {
   return '계정을 확인하지 못했습니다. 다시 시도해주세요.';
 }
 
-export default function ReportPage() {
+export default function ReportPage({ code }: { code: string | null }) {
   const [st, setSt] = useState<ReportState | null>(null);
   const [error, setError] = useState(() => signInError(new URLSearchParams(location.search).get('r')));
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [description, setDescription] = useState('');
   const [showMine, setShowMine] = useState(false);
+  const [server, setServer] = useState<number | null>(null);
 
   useEffect(() => {
-    call<ReportState>('GET', '/api/report/me').then(setSt, (e) => setError(e.message));
+    call<ReportState>('GET', `/api/report/me${code ? `?${new URLSearchParams({ server: code })}` : ''}`).then((r) => {
+      setSt(r);
+      if (r.servers.length === 1) setServer(r.servers[0]!.id);
+    }, (e) => setError(e.message));
   }, []);
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
@@ -56,6 +62,8 @@ export default function ReportPage() {
     setDone(false);
     try {
       const r = await call<{ mine: MyReport[] }>('POST', '/api/report', {
+        server,
+        code,
         targetName: fd.get('targetName'),
         description,
       });
@@ -83,24 +91,34 @@ export default function ReportPage() {
         <div className="stack">
           <p className="public-lead">신고하려면 먼저 치지직으로 로그인하세요.</p>
           {st.configured
-            ? <a className="btn btn-primary btn-block" href="/auth/chzzk?next=report">치지직으로 로그인</a>
+            ? <a className="btn btn-primary btn-block" href={`/auth/chzzk?${new URLSearchParams({ next: 'report', ...(code && { s: code }) })}`}>치지직으로 로그인</a>
             : <p className="muted small">로그인이 아직 설정되지 않았습니다.</p>}
         </div>
       ) : (
         <>
           <p className="small"><span className="muted">신고자:</span> {st.reporter}</p>
+          {!st.servers.length ? <p className="muted small">지금 신고를 받는 서버가 없습니다.</p> : null}
           <form className="stack report-form" onSubmit={onSubmit}>
+            {st.servers.length > 1 ? (
+              <label className="field">
+                <span className="field-label">서버</span>
+                <select required value={server ?? ''} onChange={(e) => setServer(Number(e.target.value) || null)}>
+                  <option value="" disabled>신고할 서버를 고르세요</option>
+                  {st.servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </label>
+            ) : null}
             <label className="field">
               <span className="field-label">닉네임</span>
               <input name="targetName" list="online-players" maxLength={64} required autoComplete="off" placeholder="신고할 플레이어의 게임 닉네임" />
-              <datalist id="online-players">{st.online.map((n) => <option key={n} value={n} />)}</datalist>
+              <datalist id="online-players">{(server != null ? st.online[server] ?? [] : []).map((n) => <option key={n} value={n} />)}</datalist>
             </label>
             <label className="field">
               <span className="field-label"><span>사유</span><span>{`${charCount(description)}/${MAX_DESCRIPTION}`}</span></span>
               <textarea name="description" className="small" rows={5} required value={description} onChange={(e) => setDescription(e.target.value)}
                 placeholder="언제, 어느 맵에서, 무슨 일이 있었는지 적어주세요" />
             </label>
-            <button className="btn btn-primary btn-block" type="submit" disabled={busy || charCount(description) > MAX_DESCRIPTION}>신고 접수</button>
+            <button className="btn btn-primary btn-block" type="submit" disabled={busy || server == null || charCount(description) > MAX_DESCRIPTION}>신고 접수</button>
           </form>
 
           {st.mine.length ? (
@@ -113,7 +131,7 @@ export default function ReportPage() {
                 <ul id="my-reports" className="plain-list">
                   {st.mine.map((r) => (
                     <li key={r.id} className="row-between small">
-                      <span>{r.targetName} <span className="muted">{fmtTime(r.createdAt)}</span></span>
+                      <span>{r.targetName} <span className="muted">{st.servers.length > 1 && r.serverName ? `${r.serverName} · ` : ''}{fmtTime(r.createdAt)}</span></span>
                       <span className={STATUS[r.status]?.cls}>{STATUS[r.status]?.label ?? r.status}</span>
                     </li>
                   ))}

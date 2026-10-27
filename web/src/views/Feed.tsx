@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { Engagement, Kill, WeaponStat } from '../lib/types.ts';
 import { useStore, setState, withEngagements } from '../lib/store.ts';
 import { api } from '../lib/api.ts';
-import { fmtTime, fmtDist, pct, describeEvent } from '../lib/format.ts';
-import { Card, Empty } from '../components/common.tsx';
-import { KillRow, EngagementCard } from '../components/feedItems.tsx';
+import { fmtTime, fmtDist, pct } from '../lib/format.ts';
+import { Card, Empty, useFactionColor } from '../components/common.tsx';
+import { KillTable, EventDetail } from '../components/feedItems.tsx';
+import { SortTable } from '../components/sortTable.tsx';
 import { IconButton } from '../components/iconButton.tsx';
 import { faXmark } from '@fortawesome/free-solid-svg-icons';
 
@@ -15,7 +16,7 @@ export default function Feed() {
       <div className="stack">
         <Engagements />
         <Card title="무기별 킬 (24시간)"><div className="card-body"><Weapons /></div></Card>
-        <Card title="매치·입퇴장 이벤트"><div className="card-body list-tight"><MatchEvents /></div></Card>
+        <Card title="매치·입퇴장 이벤트"><div className="card-body"><div className="table-wrap"><MatchEvents /></div></div></Card>
       </div>
     </div>
   );
@@ -67,7 +68,7 @@ function KillFeed() {
   );
 
   return (
-    <Card title="킬피드" extra={<span className="muted small">받은 시각 기준 · 마우스를 올리면 매치 시계</span>}>
+    <Card title="킬피드">
       <div className="toolbar">
         <input type="search" placeholder="이름, SteamID, 무기 검색" aria-label="킬피드 검색" value={searchText} onChange={(e) => setSearchText(e.target.value)} />
         {check('headshot', '헤드샷만')}
@@ -75,9 +76,9 @@ function KillFeed() {
         {check('currentMatch', '이번 매치만')}
       </div>
       <div className="card-body">
-        <div className="list-tight">
+        <div className="table-wrap">
           {rows.length
-            ? rows.slice(0, 400).map((k) => <KillRow key={k.eventId} k={k} />)
+            ? <KillTable rows={rows} limit={400} />
             : <Empty>{search ? '검색 결과가 없습니다.' : '킬 이벤트가 없습니다.'}</Empty>}
         </div>
         <div className="center"><button className="btn btn-sm" type="button" disabled={exhausted} onClick={loadMore}>이전 기록 더 보기</button></div>
@@ -113,7 +114,6 @@ function Engagements() {
       </select>
     }>
       <div className="card-body">
-        <p className="muted small">직전 킬로부터 설정한 간격(기본 15초) 안에 이어진 킬을 한 교전으로 묶습니다. 위치 데이터는 게임이 주지 않으므로 서버 전체 기준입니다.</p>
         {detail ? (
           <div className="eng-detail">
             <div className="row-between">
@@ -123,14 +123,42 @@ function Engagements() {
                 setDetail(null);
               }} />
             </div>
-            <div className="list-tight">{detail.kills.map((k) => <KillRow key={k.eventId} k={k} />)}</div>
+            <div className="table-wrap"><KillTable rows={detail.kills} /></div>
           </div>
         ) : null}
-        <div className="list-tight">
-          {rows.length ? rows.map((g) => <EngagementCard key={g.id} g={g} onOpen={open} />) : <Empty>조건에 맞는 교전이 없습니다.</Empty>}
+        <div className="table-wrap">
+          {rows.length ? <EngagementTable rows={rows} onOpen={open} /> : <Empty>조건에 맞는 교전이 없습니다.</Empty>}
         </div>
       </div>
     </Card>
+  );
+}
+
+function EngagementTable({ rows, onOpen }: { rows: Engagement[]; onOpen: (g: Engagement) => void }) {
+  const color = useFactionColor();
+  const duration = (g: Engagement) => (g.startTime != null && g.endTime != null ? g.endTime - g.startTime : (g.endedAt - g.startedAt) / 1000);
+  return (
+    <SortTable rows={rows} rowKey={(g) => g.id} compact initial={{ key: 'at', dir: -1 }} columns={[
+      { key: 'at', label: '시각', desc: true, sort: (g) => g.startedAt, render: (g) => (
+        <>
+          <div className="nowrap">{`#${g.id} · ${fmtTime(g.startedAt)}`}</div>
+          <div className="muted small">{`${Math.max(1, Math.round(duration(g)))}초${g.map ? ` · ${g.map}` : ''}`}</div>
+        </>
+      ) },
+      { key: 'kills', label: '킬', num: true, sort: (g) => g.kills, render: (g) => (g.teamkills ? <>{g.kills}<div className="danger small">{`팀킬 ${g.teamkills}`}</div></> : g.kills) },
+      { key: 'people', label: '인원', num: true, sort: (g) => g.participants.length, render: (g) => g.participants.length },
+      { key: 'hs', label: 'HS%', num: true, sort: (g) => pct(g.headshots, g.kills), render: (g) => `${pct(g.headshots, g.kills) ?? 0}%` },
+      { key: 'factions', label: '진영', className: 'eng-bar-cell', render: (g) => {
+        const factions = Object.entries(g.factions).sort((a, b) => b[1] - a[1]);
+        const total = factions.reduce((s, [, n]) => s + n, 0);
+        return (
+          <div className="eng-bar" aria-label="진영별 킬 비중">
+            {factions.map(([f, n]) => <span key={f} style={{ width: `${(n / total) * 100}%`, background: color(f) || 'var(--muted)' }} title={`${f}: ${n}킬`} />)}
+          </div>
+        );
+      } },
+      { key: 'actions', label: <span className="sr-only">작업</span>, className: 'actions', render: (g) => <button className="btn btn-sm" type="button" onClick={() => onOpen(g)}>상세</button> },
+    ]} />
   );
 }
 
@@ -148,30 +176,26 @@ function Weapons() {
   }, []);
   if (!rows.length) return <Empty>데이터 없음</Empty>;
   return (
-    <table className="table table-compact">
-      <thead><tr><th>무기</th><th className="num">킬</th><th className="num">HS%</th><th className="num">평균</th><th className="num">최장</th></tr></thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.weapon}>
-            <td>{r.weapon}</td>
-            <td className="num">{r.kills}</td>
-            <td className="num">{pct(r.headshots, r.kills)}%</td>
-            <td className="num">{fmtDist(r.avgDistance)}</td>
-            <td className="num">{fmtDist(r.maxDistance)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="table-wrap">
+      <SortTable rows={rows} rowKey={(r) => r.weapon} compact initial={{ key: 'kills', dir: -1 }} columns={[
+        { key: 'weapon', label: '무기', sort: (r) => r.weapon, render: (r) => r.weapon },
+        { key: 'kills', label: '킬', num: true, sort: (r) => r.kills, render: (r) => r.kills },
+        { key: 'hs', label: 'HS%', num: true, sort: (r) => pct(r.headshots, r.kills), render: (r) => `${pct(r.headshots, r.kills)}%` },
+        { key: 'avg', label: '평균', num: true, sort: (r) => r.avgDistance, render: (r) => fmtDist(r.avgDistance) },
+        { key: 'max', label: '최장', num: true, sort: (r) => r.maxDistance, render: (r) => fmtDist(r.maxDistance) },
+      ]} />
+    </div>
   );
 }
 
 function MatchEvents() {
   const events = useStore((s) => s.matchEvents);
-  if (!events.length) return <Empty>Season 2 이벤트(매치 상태·결과·입퇴장)가 아직 없습니다.</Empty>;
-  return events.slice(0, 40).map((e, i) => (
-    <div key={`${e.receivedAt}-${i}`} className="evt">
-      <span className="kill-time">{fmtTime(e.receivedAt)}</span>
-      <span>{describeEvent(e)}</span>
-    </div>
-  ));
+  if (!events.length) return <Empty>이벤트가 없습니다.</Empty>;
+  return (
+    <SortTable rows={events.slice(0, 40)} rowKey={(e, i) => `${e.receivedAt}-${i}`} compact initial={{ key: 'at', dir: -1 }} columns={[
+      { key: 'at', label: '시각', desc: true, sort: (e) => e.receivedAt, className: 'kill-time', render: (e) => fmtTime(e.receivedAt) },
+      { key: 'type', label: '종류', sort: (e) => e.type, render: (e) => <span className="tag">{e.type}</span> },
+      { key: 'detail', label: '내용', className: 'small', render: (e) => <EventDetail e={e} /> },
+    ]} />
+  );
 }

@@ -1,8 +1,16 @@
 import { memo } from 'react';
-import type { KeyboardEvent } from 'react';
-import type { Engagement, Kill } from '../lib/types.ts';
-import { fmtTime, fmtClock, fmtDist, fmtAgo, pct, TAG_LABELS } from '../lib/format.ts';
+import type { Engagement, FeedEvent, Kill } from '../lib/types.ts';
+import { fmtTime, fmtClock, fmtDist, fmtAgo, pct, TAG_LABELS, describeEvent, killParts } from '../lib/format.ts';
+import { Icon } from './iconButton.tsx';
+import { faArrowRight } from '@fortawesome/free-solid-svg-icons';
 import { useFactionColor, Fdot } from './common.tsx';
+import { SortTable } from './sortTable.tsx';
+
+export function EventDetail({ e }: { e: FeedEvent }) {
+  if (e.type !== 'killed' || e.suicide) return <>{describeEvent(e)}</>;
+  const k = killParts(e);
+  return <>킬: {k.killer} <Icon icon={faArrowRight} className="inline-icon" aria-label="처치" /> {k.victim}{k.extra}</>;
+}
 
 const SHOWN_TAGS = ['Headshot', 'Penetration', 'Ricochet', 'WeaponMelee', 'VehicleExplosion', 'RoadKill', 'Falling'];
 
@@ -30,27 +38,35 @@ export const KillRow = memo(function KillRow({ k, compact = false }: { k: Kill; 
   );
 });
 
-export function EngagementCard({ g, onOpen }: { g: Engagement; onOpen?: (g: Engagement) => void }) {
+export function KillTable({ rows, limit }: { rows: Kill[]; limit?: number }) {
+  return (
+    <SortTable rows={rows} rowKey={(k) => k.eventId} compact limit={limit} initial={{ key: 'at', dir: -1 }}
+      rowClass={(k) => (k.teamkill ? 'row-tk' : k.suicide ? 'row-self' : undefined)} columns={[
+        { key: 'at', label: '시각', desc: true, sort: (k) => k.receivedAt, className: 'kill-time', render: (k) => <span title={`매치 시계 ${fmtClock(k.eventTime)}`}>{fmtTime(k.receivedAt)}</span> },
+        { key: 'killer', label: '킬러', sort: (k) => (k.suicide ? null : k.killerName ?? k.killerSteamId), render: (k) => (
+          k.killerSteamId && !k.suicide ? <Who name={k.killerName} steamId={k.killerSteamId} faction={k.killerFaction} /> : <span className="muted">—</span>
+        ) },
+        { key: 'weapon', label: '무기', sort: (k) => (k.suicide ? '자살' : k.weapon), className: 'kill-weapon', render: (k) => (k.suicide ? '자살' : k.weapon || (k.killerSteamId ? '?' : '환경사')) },
+        { key: 'victim', label: '피해자', sort: (k) => k.victimName ?? k.victimSteamId, render: (k) => <Who name={k.victimName} steamId={k.victimSteamId} faction={k.victimFaction} /> },
+        { key: 'tags', label: '태그', desc: true, sort: (k) => Number(k.teamkill) * 2 + Number(k.headshot), render: (k) => (
+          <>
+            {k.teamkill ? <span className="tag tag-danger" title="폴링으로 본 진영 기준 추정">팀킬</span> : null}
+            {k.tags.filter((t) => SHOWN_TAGS.includes(t)).map((t) => <span key={t} className={`tag${t === 'Headshot' ? ' tag-hs' : ''}`}>{TAG_LABELS[t] || t}</span>)}
+          </>
+        ) },
+        { key: 'dist', label: '거리', num: true, sort: (k) => k.distanceM, className: 'nowrap', render: (k) => (k.distanceM != null ? fmtDist(k.distanceM) : '—') },
+      ]} />
+  );
+}
+
+export function EngagementCard({ g }: { g: Engagement }) {
   const color = useFactionColor();
   const duration = g.startTime != null && g.endTime != null ? g.endTime - g.startTime : (g.endedAt - g.startedAt) / 1000;
   const factions = Object.entries(g.factions).sort((a, b) => b[1] - a[1]);
   const total = factions.reduce((s, [, n]) => s + n, 0);
   const topWeapons = Object.entries(g.weapons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([w, n]) => `${w} ${n}`).join(', ');
-  const interactive = onOpen
-    ? {
-      tabIndex: 0,
-      role: 'button',
-      onClick: () => onOpen(g),
-      onKeyDown: (e: KeyboardEvent) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpen(g);
-        }
-      },
-    }
-    : {};
   return (
-    <div className="eng" {...interactive}>
+    <div className="eng">
       <div className="eng-head">
         <strong>교전 #{g.id}</strong>
         <span className="muted small">{`${fmtTime(g.startedAt)} · ${Math.max(1, Math.round(duration))}초 · ${g.map ?? ''}`}</span>

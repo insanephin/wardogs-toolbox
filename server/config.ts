@@ -13,7 +13,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
     host: '0.0.0.0',
     port: 8080,
-    admins: env.ADMIN_CHZZK_IDS || '',
+    superadmins: env.SUPERADMIN_STEAM_IDS || '',
     feedToken: env.FEED_TOKEN || '',
     engagementGapSec: int('ENGAGEMENT_GAP_SEC', 15),
     engagementMinKills: int('ENGAGEMENT_MIN_KILLS', 3),
@@ -34,6 +34,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     mapArtUrl: env.MAP_ART_URL ?? 'http://rcon.wardogs.com/img/maps',
     discord: {
       botSecret: env.DISCORD_BOT_SECRET || '',
+      legacyServerId: int('DISCORD_SERVER_ID', 1),
+      clientId: env.DISCORD_CLIENT_ID || '',
+      clientSecret: env.DISCORD_CLIENT_SECRET || '',
+      redirectUrl: env.DISCORD_REDIRECT_URL || callback('discord'),
+    },
+    twitch: {
+      clientId: env.TWITCH_CLIENT_ID || '',
+      clientSecret: env.TWITCH_CLIENT_SECRET || '',
+      redirectUrl: env.TWITCH_REDIRECT_URL || callback('twitch'),
     },
   };
 }

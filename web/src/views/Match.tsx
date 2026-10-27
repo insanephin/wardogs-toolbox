@@ -28,7 +28,6 @@ export default function Match() {
   const ready = catalog && catalog.error === undefined ? catalog : null;
   return (
     <>
-      {!admin ? <div className="banner banner-info">경기 운영은 관리자 권한이 필요합니다. 현재 상태와 로테이션만 볼 수 있습니다.</div> : null}
       <div className="grid-main">
         <Card title="맵·조명">
           <div className="card-body stack">
@@ -37,14 +36,14 @@ export default function Match() {
                 <ChangeMap catalog={ready} admin={admin} rev={rotationRev} onRotationChange={bumpRotation} />
                 <LiveLighting catalog={ready} admin={admin} />
               </>
-            ) : null}
+            ) : <Spinner />}
           </div>
         </Card>
         <Card title="매치 진행">
-          <div className="card-body stack">{ready ? <Controls admin={admin} /> : null}</div>
+          <div className="card-body stack">{ready ? <Controls admin={admin} /> : catalog?.error ? <Empty>게임 서버에 연결되면 표시됩니다.</Empty> : <Spinner />}</div>
         </Card>
       </div>
-      <Card title="맵 로테이션"><div className="card-body stack">{ready ? <Rotation rev={rotationRev} admin={admin} onChange={bumpRotation} /> : null}</div></Card>
+      <Card title="맵 로테이션"><div className="card-body stack">{ready ? <Rotation rev={rotationRev} admin={admin} onChange={bumpRotation} /> : catalog?.error ? <Empty>게임 서버에 연결되면 표시됩니다.</Empty> : <Spinner />}</div></Card>
     </>
   );
 }
@@ -137,16 +136,14 @@ function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog
           </select>
         </label>
       </div>
-      <p className="muted small">현재 매치가 끝나는 화면이 지나면 이동합니다. 전환 후 약 40초간 팀 정보가 비어 보입니다.</p>
       <div className="row-wrap">
         <button className="btn btn-primary" type="submit" disabled={!admin}>맵 변경</button>
         <button className="btn" type="button" disabled={!canEditRotation || rotationOn === false}
-          title={rotationOn === false ? '로테이션이 꺼져 있어 매치가 끝나면 지금 맵을 다시 불러옵니다' : '현재 맵이 끝나면 이 맵으로 넘어갑니다'}
+          title={rotationOn === false ? '로테이션 꺼짐' : undefined}
           onClick={() => toRotation('다음 맵 예약', '/api/rotation/next')}>다음 맵으로 예약</button>
         <button className="btn" type="button" disabled={!canEditRotation}
           onClick={() => toRotation('로테이션 추가', '/api/rotation')}>로테이션 끝에 추가</button>
       </div>
-      {rotationOn === false ? <p className="hint">로테이션이 꺼져 있어 다음 맵 예약은 쓸 수 없습니다. 매치가 끝나면 지금 맵을 다시 불러옵니다.</p> : null}
     </form>
   );
 }
@@ -164,7 +161,6 @@ function LiveLighting({ catalog, admin }: { catalog: Catalog; admin: boolean }) 
         <button className="btn ctl-btn" type="button" disabled={!admin || !serves(caps, 'PUT /v1/world/lighting')}
           onClick={() => run('조명 변경', 'POST', '/api/world/lighting', { lighting })}>적용</button>
       </span>
-      <span className="hint">맵을 바꾸지 않고 지금 매치의 조명·날씨만 바꿉니다.</span>
     </label>
   );
 }
@@ -181,11 +177,11 @@ function Controls({ admin }: { admin: boolean }) {
     <>
       <TickTimer admin={admin} />
       <div className="row-between divider">
-        <div><strong>매치 재시작</strong><div className="muted small">현재 맵을 다시 불러옵니다. 로테이션 위치는 그대로이고 설정 파일은 다시 읽지 않습니다.</div></div>
+        <strong>매치 재시작</strong>
         <button className="btn btn-danger-outline ctl-btn" type="button" disabled={!admin} onClick={restartMatch}>재시작</button>
       </div>
       <div className="row-between">
-        <div><strong>매치 종료</strong><div className="muted small">로테이션의 다음 맵으로 넘어갑니다. 로테이션이 꺼져 있으면 현재 맵을 다시 불러옵니다.</div></div>
+        <strong>매치 종료</strong>
         <button className="btn btn-danger ctl-btn" type="button" disabled={!admin} onClick={endMatch}>종료</button>
       </div>
     </>
@@ -242,7 +238,7 @@ function TickTimer({ admin }: { admin: boolean }) {
       </div>
       <div className="reward"><span>핫 존</span><b>{`$${ZONE_BASE.hot * mult}`}</b><span className="muted small">{scale}</span></div>
       <div className="row-between">
-        <span className="muted small">{`지금 매치 ${saved.current ?? '—'}초 · 주기가 짧을수록 자주, 적게 지급합니다.`}</span>
+        <span className="muted small">{`지금 매치 ${saved.current ?? '—'}초`}</span>
         <button className="btn ctl-btn" type="button" disabled={!editable || !dirty || busy} onClick={apply}>적용</button>
       </div>
     </div>
@@ -305,7 +301,6 @@ function Rotation({ rev, admin, onChange }: { rev: number; admin: boolean; onCha
             onClick={() => edit('로테이션 순서', 'PUT', '/api/rotation/settings', { mode: 'random' })}>무작위</button>
         </div>
       </div>
-      <p className="muted small">{`편집은 설정 문서를 고쳐 적용하며, 다음 맵 전환부터 반영됩니다.${r.enabled ? '' : ' 꺼져 있으면 매치가 끝날 때 지금 맵을 다시 불러옵니다.'}`}</p>
       <div className="table-wrap">
         <table className="table">
           <thead><tr><th className="num">#</th><th>맵</th><th>모드</th><th>조명</th><th>상태</th>{editable ? <th aria-label="편집" /> : null}</tr></thead>
@@ -322,7 +317,7 @@ function Rotation({ rev, admin, onChange }: { rev: number; admin: boolean; onCha
                 </td>
                 {editable ? (
                   <td className="nowrap">
-                    <IconButton icon={faForwardStep} label={!r.enabled ? '로테이션이 꺼져 있어 이동할 수 없습니다' : e.denied ? '거부된 항목' : '이 맵으로 이동'}
+                    <IconButton icon={faForwardStep} label="이 맵으로 이동"
                       disabled={busy || !r.enabled || e.status === 'now' || !!e.denied} onClick={() => jump(i, e)} />
                     <IconButton icon={faArrowUp} label="위로" disabled={busy || i === 0}
                       onClick={() => edit('로테이션 이동', 'POST', `/api/rotation/${i}/move`, { to: i - 1 })} />

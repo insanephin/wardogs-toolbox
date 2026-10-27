@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders } from 'node:
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import type { Role, Session } from './auth.ts';
+import type { ServerRuntime } from './fleet.ts';
 
 export class HttpError extends Error {
   status: number;
@@ -46,6 +47,13 @@ export async function readJson(req: IncomingMessage, limit = 256 * 1024): Promis
   }
 }
 
+export const STEAM_ID = /^\d{17}$/;
+
+export function requireSteamId(id: string): string {
+  if (!STEAM_ID.test(id)) throw new HttpError(400, 'bad_steam_id', 'SteamID64(17자리 숫자)가 아닙니다');
+  return id;
+}
+
 export function requireText(value: unknown, field: string, max: number, { optional = false } = {}): string {
   const s = typeof value === 'string' ? value.trim() : '';
   const n = [...s].length;
@@ -82,11 +90,14 @@ interface RouteContext {
   body: Body;
   session: Session;
   sessionId: string | undefined;
+  srv: ServerRuntime;
+  role: Role;
 }
 
 interface RouteOptions {
   role?: Role;
   public?: boolean;
+  superadmin?: boolean;
   stream?: boolean;
   rawBody?: boolean;
 }
@@ -175,6 +186,7 @@ interface SseClient {
   res: ServerResponse;
   session: Session;
   sessionId: string | undefined;
+  serverId: number;
 }
 
 export class SseHub {
@@ -188,11 +200,13 @@ export class SseHub {
     this.heartbeat.unref();
   }
 
-  get size(): number {
-    return this.clients.size;
+  watching(serverId: number): number {
+    let n = 0;
+    for (const c of this.clients) if (c.serverId === serverId) n++;
+    return n;
   }
 
-  open(req: IncomingMessage, res: ServerResponse, session: Session, sessionId: string | undefined): SseClient {
+  open(req: IncomingMessage, res: ServerResponse, session: Session, sessionId: string | undefined, serverId: number): SseClient {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store',
@@ -200,15 +214,15 @@ export class SseHub {
       'X-Accel-Buffering': 'no',
     });
     res.write('retry: 3000\n\n');
-    const client = { res, session, sessionId };
+    const client = { res, session, sessionId, serverId };
     this.clients.add(client);
     req.on('close', () => this.clients.delete(client));
     return client;
   }
 
-  closeSession(sessionId: string | undefined): void {
+  close(match: (c: SseClient) => boolean): void {
     for (const c of this.clients) {
-      if (c.sessionId === sessionId) {
+      if (match(c)) {
         c.res.end();
         this.clients.delete(c);
       }
@@ -219,10 +233,15 @@ export class SseHub {
     client.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
-  broadcast(event: string, data: unknown): void {
+  closeSession(sessionId: string | undefined): void {
+    this.close((c) => c.sessionId === sessionId);
+  }
+
+  broadcast(serverId: number, event: string, data: unknown): void {
     if (!this.clients.size) return;
     const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const c of this.clients) {
+      if (c.serverId !== serverId) continue;
       if (c.session.expires < Date.now()) {
         c.res.end();
         this.clients.delete(c);

@@ -1,15 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties, ReactNode } from 'react';
 import type { Action } from '../lib/types.ts';
 import { useStore } from '../lib/store.ts';
 import { api } from '../lib/api.ts';
 
-export function useNow(ms = 5000): number {
+export function useNow(): number {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), ms);
+    const t = setInterval(() => setNow(Date.now()), 5000);
     return () => clearInterval(t);
-  }, [ms]);
+  }, []);
   return now;
 }
 
@@ -18,13 +19,26 @@ export function useFactionColor() {
   return (name: string | null | undefined) => (name ? colors[name] ?? null : null);
 }
 
-export function Card({ title, extra, className = '', children }: { title: ReactNode; extra?: ReactNode; className?: string; children?: ReactNode }) {
+export function Card({ title, extra, className = '', children }: { title?: ReactNode; extra?: ReactNode; className?: string; children?: ReactNode }) {
   return (
-    <section className={`card ${className}`.trim()}>
-      <header className="card-head"><h2>{title}</h2>{extra}</header>
+    <section className={`card ${title ? '' : 'card-bare'} ${className}`.replace(/\s+/g, ' ').trim()}>
+      {title ? <header className="card-head"><h2>{title}</h2><div className="card-extra">{extra}</div></header> : null}
       {children}
     </section>
   );
+}
+
+let actionSlot: HTMLElement | null = null;
+const slotListeners = new Set<() => void>();
+export const setPageActionSlot = (el: HTMLElement | null) => {
+  actionSlot = el;
+  slotListeners.forEach((fn) => fn());
+};
+const subscribeSlot = (fn: () => void) => (slotListeners.add(fn), () => slotListeners.delete(fn));
+
+export function PageActions({ children }: { children: ReactNode }) {
+  const slot = useSyncExternalStore(subscribeSlot, () => actionSlot);
+  return slot ? createPortal(children, slot) : null;
 }
 
 export function FactionChip({ name, color }: { name: string | null | undefined; color: string | null | undefined }) {

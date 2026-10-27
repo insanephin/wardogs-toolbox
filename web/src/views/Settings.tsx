@@ -5,7 +5,7 @@ import { api, run, errorMessage, ApiError } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
 import { toast } from '../lib/toast.ts';
 import { fmtTime } from '../lib/format.ts';
-import { Card, Empty } from '../components/common.tsx';
+import { Card, PageActions, Empty } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
 
 type Draft = Record<string, string | boolean>;
@@ -84,7 +84,8 @@ export default function Settings() {
 
   return (
     <div className="grid-main">
-      <Card title="간편 설정" extra={<span className="muted small">{`리비전 ${doc.revision}${doc.writable ? '' : ' · 읽기 전용'}`}</span>}>
+      <Card>
+        <PageActions><span className="muted small">{`리비전 ${doc.revision}${doc.writable ? '' : ' · 읽기 전용'}`}</span></PageActions>
         <form className="card-body stack" onSubmit={apply}>
           <div className="settings-grid">
             {doc.fields.map((f) => (
@@ -100,7 +101,6 @@ export default function Settings() {
               <button className="btn btn-primary" type="submit" disabled={busy || !doc.writable || !changed.length}>적용</button>
             </span>
           </div>
-          <p className="muted small">고른 항목만 설정 문서에서 바꾸고 나머지는 그대로 둡니다. 값이 비어 있는 항목은 문서에 없어 게임 기본값을 씁니다.</p>
         </form>
       </Card>
       <div className="stack">
@@ -184,7 +184,6 @@ function Presets({ doc, draft, onLoad, onSaved }: {
 
   return (
     <div className="card-body stack">
-      <p className="muted small">자주 쓰는 설정 묶음을 관리자끼리 공유합니다. 불러오면 입력칸만 채우고, 적용은 따로 눌러야 합니다. 접속 비밀번호는 저장하지 않습니다.</p>
       <div className="inline-field">
         <select aria-label="프리셋" value={picked} onChange={(e) => setPicked(e.target.value)}>
           <option value="">{doc.presets.length ? '프리셋 고르기' : '저장된 프리셋 없음'}</option>
@@ -203,7 +202,7 @@ function Presets({ doc, draft, onLoad, onSaved }: {
 }
 
 function Result({ doc, result }: { doc: SettingsDoc; result: { r: ConfigResult; keys: string[] } | null }) {
-  if (!result) return <Empty>적용하면 항목별로 언제 반영되는지 여기 표시됩니다.</Empty>;
+  if (!result) return <Empty>적용 내역이 없습니다.</Empty>;
   const { r, keys } = result;
   const labelsIn = (section: string) => doc.fields.filter((f) => f.section === section && keys.includes(f.key)).map((f) => f.label);
   return (
@@ -222,7 +221,7 @@ function Result({ doc, result }: { doc: SettingsDoc; result: { r: ConfigResult; 
       {r.shadowed?.length ? (
         <ul className="plain-list small">{r.shadowed.map((x, i) => {
           const f = doc.fields.find((y) => y.section === x.section && y.ini.toLowerCase() === String(x.key).toLowerCase());
-          return <li key={i} className="danger">{`${f?.label ?? x.key}: "${x.declared ?? ''}"로 저장했지만 다른 곳의 설정이 우선해 실제 값은 "${x.effective ?? '?'}"입니다. 호스트에 문의하세요.`}</li>;
+          return <li key={i} className="danger">{`${f?.label ?? x.key}: 다른 설정이 우선해 실제 값은 "${x.effective ?? '?'}"입니다.`}</li>;
         })}</ul>
       ) : null}
       {r.errors?.length ? (

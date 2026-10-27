@@ -1,11 +1,71 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import type { StatementSync } from 'node:sqlite';
+import { randomBytes } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ConfigPreset } from './settings.ts';
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS kills (
-  event_id TEXT PRIMARY KEY,
+const SCHEMA_VERSION = 2;
+
+const GLOBAL_TABLES = `
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  steam_id TEXT PRIMARY KEY,
+  name TEXT,
+  avatar TEXT,
+  created_at INTEGER NOT NULL,
+  last_login_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS user_identities (
+  provider TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  steam_id TEXT NOT NULL,
+  name TEXT,
+  linked_at INTEGER NOT NULL,
+  PRIMARY KEY (provider, provider_id),
+  UNIQUE (steam_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS servers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  rcon_url TEXT NOT NULL DEFAULT '',
+  rcon_password TEXT NOT NULL DEFAULT '',
+  feed_token TEXT NOT NULL UNIQUE,
+  public INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  created_by TEXT,
+  join_code TEXT
+);
+
+CREATE TABLE IF NOT EXISTS server_members (
+  server_id INTEGER NOT NULL,
+  steam_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  added_at INTEGER NOT NULL,
+  added_by TEXT,
+  PRIMARY KEY (server_id, steam_id)
+);
+CREATE INDEX IF NOT EXISTS server_members_steam ON server_members(steam_id);
+
+CREATE TABLE IF NOT EXISTS account_links (
+  steam_id TEXT PRIMARY KEY,
+  steam_name TEXT,
+  chzzk_channel_id TEXT NOT NULL UNIQUE,
+  chzzk_name TEXT,
+  linked_at DATETIME
+);
+`;
+
+const SERVER_TABLES: Record<string, string> = {
+  kills: `CREATE TABLE IF NOT EXISTS kills (
+  server_id INTEGER NOT NULL,
+  event_id TEXT NOT NULL,
   received_at INTEGER NOT NULL,
   match_key TEXT,
   map TEXT,
@@ -18,26 +78,23 @@ CREATE TABLE IF NOT EXISTS kills (
   headshot INTEGER NOT NULL DEFAULT 0,
   suicide INTEGER NOT NULL DEFAULT 0,
   teamkill INTEGER NOT NULL DEFAULT 0,
-  engagement_id INTEGER
-);
-CREATE INDEX IF NOT EXISTS kills_received ON kills(received_at);
-CREATE INDEX IF NOT EXISTS kills_killer ON kills(killer_steam);
-CREATE INDEX IF NOT EXISTS kills_victim ON kills(victim_steam);
-CREATE INDEX IF NOT EXISTS kills_match ON kills(match_key);
-
-CREATE TABLE IF NOT EXISTS match_events (
-  event_id TEXT PRIMARY KEY,
+  engagement_id INTEGER,
+  PRIMARY KEY (server_id, event_id)
+)`,
+  match_events: `CREATE TABLE IF NOT EXISTS match_events (
+  server_id INTEGER NOT NULL,
+  event_id TEXT NOT NULL,
   received_at INTEGER NOT NULL,
   type TEXT NOT NULL,
   map TEXT,
   event_time REAL,
   match_id TEXT,
-  payload TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS match_events_received ON match_events(received_at);
-
-CREATE TABLE IF NOT EXISTS engagements (
+  payload TEXT NOT NULL,
+  PRIMARY KEY (server_id, event_id)
+)`,
+  engagements: `CREATE TABLE IF NOT EXISTS engagements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL,
   match_key TEXT,
   map TEXT,
   started_at INTEGER NOT NULL,
@@ -52,11 +109,10 @@ CREATE TABLE IF NOT EXISTS engagements (
   factions TEXT NOT NULL DEFAULT '{}',
   participants TEXT NOT NULL DEFAULT '[]',
   weapons TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS engagements_started ON engagements(started_at);
-
-CREATE TABLE IF NOT EXISTS actions (
+)`,
+  actions: `CREATE TABLE IF NOT EXISTS actions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL,
   at INTEGER NOT NULL,
   actor TEXT NOT NULL,
   action TEXT NOT NULL,
@@ -64,47 +120,41 @@ CREATE TABLE IF NOT EXISTS actions (
   detail TEXT,
   ok INTEGER NOT NULL,
   error TEXT
-);
-CREATE INDEX IF NOT EXISTS actions_at ON actions(at);
-
-CREATE TABLE IF NOT EXISTS players (
-  steam_id TEXT PRIMARY KEY,
+)`,
+  players: `CREATE TABLE IF NOT EXISTS players (
+  server_id INTEGER NOT NULL,
+  steam_id TEXT NOT NULL,
   first_seen INTEGER NOT NULL,
   last_seen INTEGER NOT NULL,
   last_name TEXT,
-  sessions INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS player_names (
+  sessions INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (server_id, steam_id)
+)`,
+  player_names: `CREATE TABLE IF NOT EXISTS player_names (
+  server_id INTEGER NOT NULL,
   steam_id TEXT NOT NULL,
   name TEXT NOT NULL,
   first_seen INTEGER NOT NULL,
   last_seen INTEGER NOT NULL,
-  PRIMARY KEY (steam_id, name)
-);
-
-CREATE TABLE IF NOT EXISTS pending_bans (
-  steam_id TEXT PRIMARY KEY,
+  PRIMARY KEY (server_id, steam_id, name)
+)`,
+  pending_bans: `CREATE TABLE IF NOT EXISTS pending_bans (
+  server_id INTEGER NOT NULL,
+  steam_id TEXT NOT NULL,
   reason TEXT,
   created_at INTEGER NOT NULL,
   created_by TEXT NOT NULL,
-  last_error TEXT
-);
-
-CREATE TABLE IF NOT EXISTS account_links (
-  steam_id TEXT PRIMARY KEY,
-  steam_name TEXT,
-  chzzk_channel_id TEXT NOT NULL UNIQUE,
-  chzzk_name TEXT,
-  linked_at DATETIME
-);
-
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS match_players (
+  last_error TEXT,
+  PRIMARY KEY (server_id, steam_id)
+)`,
+  server_settings: `CREATE TABLE IF NOT EXISTS server_settings (
+  server_id INTEGER NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY (server_id, key)
+)`,
+  match_players: `CREATE TABLE IF NOT EXISTS match_players (
+  server_id INTEGER NOT NULL,
   match_key TEXT NOT NULL,
   steam_id TEXT NOT NULL,
   map TEXT,
@@ -115,18 +165,18 @@ CREATE TABLE IF NOT EXISTS match_players (
   cash_earned INTEGER NOT NULL DEFAULT 0,
   first_seen INTEGER NOT NULL,
   last_seen INTEGER NOT NULL,
-  PRIMARY KEY (match_key, steam_id)
-);
-CREATE INDEX IF NOT EXISTS match_players_seen ON match_players(last_seen);
-
-CREATE TABLE IF NOT EXISTS match_results (
-  match_key TEXT PRIMARY KEY,
+  PRIMARY KEY (server_id, match_key, steam_id)
+)`,
+  match_results: `CREATE TABLE IF NOT EXISTS match_results (
+  server_id INTEGER NOT NULL,
+  match_key TEXT NOT NULL,
   winning_faction TEXT,
-  ended_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS feed_requests (
+  ended_at INTEGER NOT NULL,
+  PRIMARY KEY (server_id, match_key)
+)`,
+  feed_requests: `CREATE TABLE IF NOT EXISTS feed_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER,
   at INTEGER NOT NULL,
   peer TEXT,
   status INTEGER NOT NULL,
@@ -135,10 +185,10 @@ CREATE TABLE IF NOT EXISTS feed_requests (
   accepted INTEGER,
   duplicates INTEGER,
   error TEXT
-);
-
-CREATE TABLE IF NOT EXISTS reports (
+)`,
+  reports: `CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   reporter_chzzk_id TEXT, reporter_chzzk_name TEXT,
   reporter_steam_id TEXT, reporter_steam_name TEXT,
@@ -152,38 +202,67 @@ CREATE TABLE IF NOT EXISTS reports (
   handled_by TEXT,
   handled_at INTEGER,
   note TEXT
-);
-CREATE INDEX IF NOT EXISTS reports_created ON reports(created_at);
-
-CREATE TABLE IF NOT EXISTS discord_links (
-  discord_id TEXT PRIMARY KEY,
+)`,
+  whitelist_bans: `CREATE TABLE IF NOT EXISTS whitelist_bans (
+  server_id INTEGER NOT NULL,
+  steam_id TEXT NOT NULL,
+  name TEXT,
+  created_at INTEGER NOT NULL,
+  last_error TEXT,
+  PRIMARY KEY (server_id, steam_id)
+)`,
+  discord_links: `CREATE TABLE IF NOT EXISTS discord_links (
+  server_id INTEGER NOT NULL,
+  discord_id TEXT NOT NULL,
   discord_name TEXT,
-  steam_id TEXT NOT NULL UNIQUE,
+  steam_id TEXT NOT NULL,
   steam_name TEXT,
   chzzk_channel_id TEXT,
   chzzk_name TEXT,
   linked_at INTEGER NOT NULL,
   reserved INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT
-);
-
-CREATE TABLE IF NOT EXISTS discord_releases (
-  steam_id TEXT PRIMARY KEY,
-  created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS whitelist_bans (
-  steam_id TEXT PRIMARY KEY,
-  name TEXT,
+  last_error TEXT,
+  PRIMARY KEY (server_id, discord_id),
+  UNIQUE (server_id, steam_id)
+)`,
+  discord_releases: `CREATE TABLE IF NOT EXISTS discord_releases (
+  server_id INTEGER NOT NULL,
+  steam_id TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  last_error TEXT
-);
+  PRIMARY KEY (server_id, steam_id)
+)`,
+};
+
+const SERVER_INDEXES = `
+CREATE INDEX IF NOT EXISTS kills_received ON kills(server_id, received_at);
+CREATE INDEX IF NOT EXISTS kills_killer ON kills(server_id, killer_steam);
+CREATE INDEX IF NOT EXISTS kills_victim ON kills(server_id, victim_steam);
+CREATE INDEX IF NOT EXISTS kills_match ON kills(server_id, match_key);
+CREATE INDEX IF NOT EXISTS kills_engagement ON kills(engagement_id);
+CREATE INDEX IF NOT EXISTS match_events_received ON match_events(server_id, received_at);
+CREATE INDEX IF NOT EXISTS engagements_started ON engagements(server_id, started_at);
+CREATE INDEX IF NOT EXISTS actions_at ON actions(server_id, at);
+CREATE INDEX IF NOT EXISTS player_names_name ON player_names(server_id, name);
+CREATE INDEX IF NOT EXISTS match_players_seen ON match_players(server_id, last_seen);
+CREATE INDEX IF NOT EXISTS feed_requests_server ON feed_requests(server_id, id);
+CREATE INDEX IF NOT EXISTS reports_created ON reports(server_id, created_at);
+CREATE INDEX IF NOT EXISTS reports_reporter ON reports(reporter_chzzk_id, created_at);
+CREATE INDEX IF NOT EXISTS discord_links_steam ON discord_links(steam_id);
 `;
+
+const LEGACY_INDEXES = ['kills_received', 'kills_killer', 'kills_victim', 'kills_match', 'match_events_received', 'engagements_started',
+  'actions_at', 'match_players_seen', 'reports_created'];
+const LEGACY_SERVER_KEYS = ['whitelist', 'entry_gate', 'turnover', 'config_presets'];
 
 const LINK_COLUMNS = `a.steam_id AS steamId, a.steam_name AS steamName,
   a.chzzk_channel_id AS chzzkChannelId, a.chzzk_name AS chzzkName, a.linked_at AS linkedAt`;
 
 const FEED_REQUEST_KEEP = 5000;
+
+export const ROLES = ['viewer', 'mod', 'admin', 'owner'] as const;
+export type Role = (typeof ROLES)[number];
+export const IDENTITY_PROVIDERS = ['discord', 'chzzk', 'twitch'] as const;
+export type IdentityProvider = (typeof IDENTITY_PROVIDERS)[number];
 
 export const WHITELIST_MODES = ['off', 'kick', 'ban'] as const;
 export type WhitelistMode = (typeof WHITELIST_MODES)[number];
@@ -352,6 +431,7 @@ const rowToDiscordLink = (r: Row): DiscordLink => ({ ...r, reserved: !!r.reserve
 
 export interface Report {
   id: number;
+  serverId: number;
   createdAt: number;
   reporterChzzkId: string | null;
   reporterChzzkName: string | null;
@@ -369,50 +449,377 @@ export interface Report {
   note: string | null;
 }
 
-type NewReport = Omit<Report, 'id' | 'status' | 'handledBy' | 'handledAt' | 'note'>;
+type NewReport = Omit<Report, 'id' | 'serverId' | 'status' | 'handledBy' | 'handledAt' | 'note'>;
 
-const REPORT_COLUMNS = `id, created_at AS createdAt,
+const REPORT_COLUMNS = `id, server_id AS serverId, created_at AS createdAt,
   reporter_chzzk_id AS reporterChzzkId, reporter_chzzk_name AS reporterChzzkName,
   reporter_steam_id AS reporterSteamId, reporter_steam_name AS reporterSteamName,
   target_name AS targetName, target_steam_id AS targetSteamId, category, description,
   evidence_url AS evidenceUrl, map, status, handled_by AS handledBy, handled_at AS handledAt, note`;
 
-export interface RconTarget {
-  url?: string;
-  password?: string;
+export interface ServerRow {
+  id: number;
+  name: string;
+  rconUrl: string;
+  rconPassword: string;
+  feedToken: string;
+  createdAt: number;
+  createdBy: string | null;
+  joinCode: string | null;
+}
+
+const SERVER_COLUMNS = `id, name, rcon_url AS rconUrl, rcon_password AS rconPassword, feed_token AS feedToken,
+  created_at AS createdAt, created_by AS createdBy, join_code AS joinCode`;
+const rowToServer = (r: Row): ServerRow => r as ServerRow;
+
+export interface User {
+  steamId: string;
+  name: string | null;
+  avatar: string | null;
+  createdAt: number;
+  lastLoginAt: number | null;
+}
+
+export interface Member {
+  steamId: string;
+  role: Role;
+  name: string | null;
+  avatar: string | null;
+  addedAt: number;
+  addedBy: string | null;
+  lastLoginAt: number | null;
+}
+
+export interface Identity {
+  provider: IdentityProvider;
+  providerId: string;
+  name: string | null;
+  linkedAt: number;
+}
+
+export const newFeedToken = () => randomBytes(24).toString('base64url');
+
+interface StoreOptions {
+  legacyFeedToken?: string;
+  legacyDiscordServerId?: number;
 }
 
 export class Store {
   db: DatabaseSync;
-  q: ReturnType<typeof prepareQueries>;
+  #stmts = new Map<string, StatementSync>();
+  #scoped = new Map<number, ServerStore>();
 
-  constructor(path: string) {
+  constructor(path: string, { legacyFeedToken = '', legacyDiscordServerId = 1 }: StoreOptions = {}) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
-    this.db.exec(SCHEMA);
-    const cols = new Set((this.db.prepare('PRAGMA table_info(discord_links)').all() as Row[]).map((c) => c.name));
-    for (const c of ['chzzk_channel_id', 'chzzk_name']) if (!cols.has(c)) this.db.exec(`ALTER TABLE discord_links ADD COLUMN ${c} TEXT`);
-    this.q = prepareQueries(this.db);
+    this.migrate(path, legacyFeedToken, legacyDiscordServerId);
+  }
+
+  prep(sql: string): StatementSync {
+    let s = this.#stmts.get(sql);
+    if (!s) this.#stmts.set(sql, (s = this.db.prepare(sql)));
+    return s;
+  }
+
+  tx<T>(fn: () => T): T {
+    this.db.exec('BEGIN');
+    try {
+      const r = fn();
+      this.db.exec('COMMIT');
+      return r;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  columns(table: string): Set<string> {
+    return new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).map((c) => c.name));
+  }
+
+  migrate(path: string, legacyFeedToken: string, legacyDiscordServerId: number): void {
+    const version = Number((this.db.prepare('PRAGMA user_version').get() as Row).user_version);
+    if (version > SCHEMA_VERSION) throw new Error(`DB schema v${version} is newer than this build (v${SCHEMA_VERSION})`);
+    const legacy = version === 0 && this.columns('kills').size > 0 && !this.columns('kills').has('server_id');
+    const globalDiscord = !legacy && this.columns('discord_links').size > 0 && !this.columns('discord_links').has('server_id');
+    if ((legacy || globalDiscord) && path !== ':memory:' && existsSync(path)) {
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      const backup = `${path}.v${version}-${Date.now()}.bak`;
+      copyFileSync(path, backup);
+      console.log(`[DB] 스키마를 옮기기 전에 백업했습니다: ${backup}`);
+    }
+    this.tx(() => {
+      if (legacy) {
+        const dc = this.columns('discord_links');
+        for (const c of ['chzzk_channel_id', 'chzzk_name']) if (dc.size && !dc.has(c)) this.db.exec(`ALTER TABLE discord_links ADD COLUMN ${c} TEXT`);
+      }
+      this.db.exec(GLOBAL_TABLES);
+      if (!this.columns('servers').has('join_code')) this.db.exec('ALTER TABLE servers ADD COLUMN join_code TEXT');
+      this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS servers_join_code ON servers(join_code) WHERE join_code IS NOT NULL');
+      if (legacy) this.migrateV0(legacyFeedToken);
+      if (globalDiscord) this.migrateV1(legacyDiscordServerId);
+      for (const sql of Object.values(SERVER_TABLES)) this.db.exec(sql);
+      this.db.exec(SERVER_INDEXES);
+      this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    });
+  }
+
+  migrateV0(legacyFeedToken: string): void {
+    const setting = (key: string) => (this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as Row | undefined)?.value;
+    const rcon = JSON.parse(setting('rcon') ?? '{}');
+    this.db.prepare(`INSERT INTO servers (id, name, rcon_url, rcon_password, feed_token, public, created_at)
+      VALUES (1, ?, ?, ?, ?, 1, ?)`).run('WARDOGS', rcon.url ?? '', rcon.password ?? '', legacyFeedToken || newFeedToken(), Date.now());
+    for (const name of LEGACY_INDEXES) this.db.exec(`DROP INDEX IF EXISTS ${name}`);
+    for (const table of Object.keys(SERVER_TABLES)) this.rescope(table, 1);
+    this.db.exec(SERVER_TABLES.server_settings!);
+    for (const key of LEGACY_SERVER_KEYS) {
+      const value = setting(key);
+      if (value != null) this.db.prepare('INSERT INTO server_settings (server_id, key, value) VALUES (1, ?, ?)').run(key, value);
+    }
+    this.db.prepare(`DELETE FROM settings WHERE key IN (${[...LEGACY_SERVER_KEYS, 'rcon'].map(() => '?').join(', ')})`)
+      .run(...LEGACY_SERVER_KEYS, 'rcon');
+  }
+
+  migrateV1(serverId: number): void {
+    if (!this.server(serverId)) {
+      const n = Number((this.db.prepare('SELECT COUNT(*) AS n FROM discord_links').get() as Row).n);
+      console.warn(`[DB] 디스코드 화이트리스트를 옮길 서버 #${serverId}가 없어 연동 ${n}건을 버렸습니다`);
+      this.db.exec('DROP TABLE discord_links; DROP TABLE IF EXISTS discord_releases');
+      return;
+    }
+    for (const table of ['discord_links', 'discord_releases']) this.rescope(table, serverId);
+    console.log(`[DB] 디스코드 화이트리스트를 서버 #${serverId}로 옮겼습니다`);
+  }
+
+  rescope(table: string, serverId: number): void {
+    const old = this.columns(table);
+    if (!old.size) return;
+    this.db.exec(`ALTER TABLE ${table} RENAME TO ${table}__old`);
+    this.db.exec(SERVER_TABLES[table]!);
+    const shared = [...this.columns(table)].filter((c) => c !== 'server_id' && old.has(c));
+    this.db.prepare(`INSERT INTO ${table} (server_id, ${shared.join(', ')}) SELECT ?, ${shared.join(', ')} FROM ${table}__old`).run(serverId);
+    this.db.exec(`DROP TABLE ${table}__old`);
+  }
+
+  forServer(id: number): ServerStore {
+    let s = this.#scoped.get(id);
+    if (!s) this.#scoped.set(id, (s = new ServerStore(this, id)));
+    return s;
+  }
+
+  servers(): ServerRow[] {
+    return (this.prep(`SELECT ${SERVER_COLUMNS} FROM servers ORDER BY id`).all() as Row[]).map(rowToServer);
+  }
+
+  server(id: number): ServerRow | null {
+    const r = this.prep(`SELECT ${SERVER_COLUMNS} FROM servers WHERE id = ?`).get(id) as Row | undefined;
+    return r ? rowToServer(r) : null;
+  }
+
+  createServer(name: string, rconUrl: string, rconPassword: string, by: string): ServerRow {
+    return this.tx(() => {
+      const { lastInsertRowid } = this.prep(`INSERT INTO servers (name, rcon_url, rcon_password, feed_token, created_at, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)`).run(name, rconUrl, rconPassword, newFeedToken(), Date.now(), by);
+      const id = Number(lastInsertRowid);
+      this.setMember(id, by, 'owner', by);
+      return this.server(id)!;
+    });
+  }
+
+  updateServer(id: number, patch: Partial<Pick<ServerRow, 'name' | 'rconUrl' | 'rconPassword' | 'feedToken' | 'joinCode'>>): ServerRow | null {
+    const cols: Record<string, string> = {
+      name: 'name', rconUrl: 'rcon_url', rconPassword: 'rcon_password', feedToken: 'feed_token', joinCode: 'join_code',
+    };
+    const keys = Object.keys(patch).filter((k) => k in cols) as (keyof typeof patch)[];
+    if (keys.length) {
+      const values = keys.map((k) => patch[k] as string);
+      this.db.prepare(`UPDATE servers SET ${keys.map((k) => `${cols[k]} = ?`).join(', ')} WHERE id = ?`).run(...values, id);
+    }
+    return this.server(id);
+  }
+
+  deleteServer(id: number): void {
+    this.tx(() => {
+      for (const table of Object.keys(SERVER_TABLES)) this.prep(`DELETE FROM ${table} WHERE server_id = ?`).run(id);
+      this.prep('DELETE FROM server_members WHERE server_id = ?').run(id);
+      this.prep('DELETE FROM servers WHERE id = ?').run(id);
+    });
+    this.#scoped.delete(id);
+  }
+
+  memberRole(serverId: number, steamId: string): Role | null {
+    const r = this.prep('SELECT role FROM server_members WHERE server_id = ? AND steam_id = ?').get(serverId, steamId) as Row | undefined;
+    return (r?.role as Role) ?? null;
+  }
+
+  memberships(steamId: string): { serverId: number; role: Role }[] {
+    return this.prep('SELECT server_id AS serverId, role FROM server_members WHERE steam_id = ?').all(steamId) as Row[] as { serverId: number; role: Role }[];
+  }
+
+  members(serverId: number): Member[] {
+    return this.prep(`SELECT m.steam_id AS steamId, m.role, m.added_at AS addedAt, m.added_by AS addedBy,
+        u.name, u.avatar, u.last_login_at AS lastLoginAt
+      FROM server_members m LEFT JOIN users u ON u.steam_id = m.steam_id
+      WHERE m.server_id = ? ORDER BY m.added_at`).all(serverId) as Row[] as Member[];
+  }
+
+  setMember(serverId: number, steamId: string, role: Role, by: string): void {
+    this.prep(`INSERT INTO server_members (server_id, steam_id, role, added_at, added_by) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(server_id, steam_id) DO UPDATE SET role = excluded.role`).run(serverId, steamId, role, Date.now(), by);
+  }
+
+  removeMember(serverId: number, steamId: string): boolean {
+    return this.prep('DELETE FROM server_members WHERE server_id = ? AND steam_id = ?').run(serverId, steamId).changes > 0;
+  }
+
+  user(steamId: string): User | null {
+    return (this.prep(`SELECT steam_id AS steamId, name, avatar, created_at AS createdAt, last_login_at AS lastLoginAt
+      FROM users WHERE steam_id = ?`).get(steamId) as Row | undefined) as User | undefined ?? null;
+  }
+
+  touchUser(steamId: string, name: string | null, avatar: string | null, login: boolean): void {
+    const now = Date.now();
+    this.prep(`INSERT INTO users (steam_id, name, avatar, created_at, last_login_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(steam_id) DO UPDATE SET name = COALESCE(excluded.name, name), avatar = COALESCE(excluded.avatar, avatar),
+        last_login_at = COALESCE(excluded.last_login_at, last_login_at)`).run(steamId, name, avatar, now, login ? now : null);
+  }
+
+  identities(steamId: string): Identity[] {
+    return this.prep(`SELECT provider, provider_id AS providerId, name, linked_at AS linkedAt
+      FROM user_identities WHERE steam_id = ? ORDER BY provider`).all(steamId) as Row[] as Identity[];
+  }
+
+  identityOwner(provider: IdentityProvider, providerId: string): string | null {
+    const r = this.prep('SELECT steam_id FROM user_identities WHERE provider = ? AND provider_id = ?').get(provider, providerId) as Row | undefined;
+    return r?.steam_id ?? null;
+  }
+
+  linkIdentity(steamId: string, provider: IdentityProvider, providerId: string, name: string): boolean {
+    const owner = this.identityOwner(provider, providerId);
+    if (owner && owner !== steamId) return false;
+    this.tx(() => {
+      this.prep('DELETE FROM user_identities WHERE steam_id = ? AND provider = ?').run(steamId, provider);
+      this.prep('INSERT INTO user_identities (provider, provider_id, steam_id, name, linked_at) VALUES (?, ?, ?, ?, ?)')
+        .run(provider, providerId, steamId, name, Date.now());
+    });
+    return true;
+  }
+
+  unlinkIdentity(steamId: string, provider: IdentityProvider): boolean {
+    return this.prep('DELETE FROM user_identities WHERE steam_id = ? AND provider = ?').run(steamId, provider).changes > 0;
+  }
+
+  linkByAccount(provider: 'chzzk' | 'steam', id: string): Link | null {
+    const col = provider === 'chzzk' ? 'chzzk_channel_id' : 'steam_id';
+    const r = this.prep(`SELECT ${LINK_COLUMNS} FROM account_links a WHERE a.${col} = ?`).get(id) as Row | undefined;
+    return r ? rowToLink(r) : null;
+  }
+
+  saveLink(steamId: string, steamName: string, chzzkChannelId: string, chzzkName: string, linkedAt: string): void {
+    this.tx(() => {
+      this.prep('DELETE FROM account_links WHERE steam_id = ? OR chzzk_channel_id = ?').run(steamId, chzzkChannelId);
+      this.prep('INSERT INTO account_links (steam_id, steam_name, chzzk_channel_id, chzzk_name, linked_at) VALUES (?, ?, ?, ?, ?)')
+        .run(steamId, steamName, chzzkChannelId, chzzkName, linkedAt);
+    });
+  }
+
+  linkIfFree(steam: { id: string; name: string }, chzzk: { id: string; name: string }, linkedAt: string): boolean {
+    const taken = [this.linkByAccount('steam', steam.id), this.linkByAccount('chzzk', chzzk.id)]
+      .some((l) => l && (l.steamId !== steam.id || l.chzzkChannelId !== chzzk.id));
+    if (taken) return false;
+    this.saveLink(steam.id, steam.name, chzzk.id, chzzk.name, linkedAt);
+    return true;
+  }
+
+  unlink(steamId: string): void {
+    this.prep('DELETE FROM account_links WHERE steam_id = ?').run(steamId);
+  }
+
+  linksBySteam(steamIds: string[]): Map<string, Link> {
+    if (!steamIds.length) return new Map();
+    const rows = this.prep(`SELECT ${LINK_COLUMNS} FROM account_links a
+      WHERE a.steam_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(steamIds)) as Row[];
+    return new Map(rows.map((r) => [r.steamId, rowToLink(r)]));
+  }
+
+  discordSteamTaken(steamId: string, discordId: string): boolean {
+    return !!this.prep('SELECT 1 FROM discord_links WHERE steam_id = ? AND discord_id != ? LIMIT 1').get(steamId, discordId);
+  }
+
+  reportsByReporter(chzzkId: string, { since = 0, limit = 50 } = {}): (Report & { serverName: string | null })[] {
+    return this.prep(`SELECT r.*, (SELECT name FROM servers WHERE id = r.serverId) AS serverName
+      FROM (SELECT ${REPORT_COLUMNS} FROM reports WHERE reporter_chzzk_id = ? AND created_at >= ? ORDER BY id DESC LIMIT ?) r`)
+      .all(chzzkId, since, limit) as Row[] as (Report & { serverName: string | null })[];
+  }
+
+  logFeedRequest(serverId: number | null, r: FeedRequest): void {
+    const id = Number(this.prep(`INSERT INTO feed_requests (server_id, at, peer, status, code, events, accepted, duplicates, error)
+      VALUES (:sid, :at, :peer, :status, :code, :events, :accepted, :duplicates, :error)`).run({
+      sid: serverId, at: r.at, peer: r.peer ?? null, status: r.status, code: r.code ?? null, events: r.events ?? null,
+      accepted: r.accepted ?? null, duplicates: r.duplicates ?? null, error: r.error ? String(r.error).slice(0, 200) : null,
+    }).lastInsertRowid);
+    if (id % 100 === 0) {
+      this.prep(`DELETE FROM feed_requests WHERE server_id IS :sid AND id <= COALESCE(
+        (SELECT id FROM feed_requests WHERE server_id IS :sid ORDER BY id DESC LIMIT 1 OFFSET :keep), 0)`).run({ sid: serverId, keep: FEED_REQUEST_KEEP });
+    }
+  }
+
+}
+
+export class ServerStore {
+  root: Store;
+  id: number;
+
+  constructor(root: Store, id: number) {
+    this.root = root;
+    this.id = id;
+  }
+
+  #get(sql: string, ...args: any[]): Row | undefined {
+    return this.root.prep(sql).get(this.id, ...args) as Row | undefined;
+  }
+
+  #all(sql: string, ...args: any[]): Row[] {
+    return this.root.prep(sql).all(this.id, ...args) as Row[];
+  }
+
+  #run(sql: string, ...args: any[]) {
+    return this.root.prep(sql).run(this.id, ...args);
+  }
+
+  #setting<T>(key: string, fallback: T): T {
+    const row = this.#get('SELECT value FROM server_settings WHERE server_id = ? AND key = ?', key);
+    return row ? JSON.parse(row.value) : fallback;
+  }
+
+  #setSetting(key: string, value: unknown): void {
+    this.#run(`INSERT INTO server_settings (server_id, key, value) VALUES (?, ?, ?)
+      ON CONFLICT(server_id, key) DO UPDATE SET value = excluded.value`, key, JSON.stringify(value));
   }
 
   hasKill(eventId: string): boolean {
-    return !!this.q.hasKill.get(eventId);
+    return !!this.#get('SELECT 1 FROM kills WHERE server_id = ? AND event_id = ?', eventId);
   }
 
   lastKill(): Kill | null {
-    const r = this.db.prepare('SELECT * FROM kills ORDER BY received_at DESC LIMIT 1').get();
+    const r = this.#get('SELECT * FROM kills WHERE server_id = ? ORDER BY received_at DESC LIMIT 1');
     return r ? rowToKill(r) : null;
   }
 
   lastMatchPlayer(): MatchPlayerSeen | null {
-    return (this.db.prepare(`SELECT match_key AS matchKey, map, last_seen AS lastSeen
-      FROM match_players ORDER BY last_seen DESC LIMIT 1`).get() as Row | undefined) as MatchPlayerSeen | undefined ?? null;
+    return (this.#get(`SELECT match_key AS matchKey, map, last_seen AS lastSeen
+      FROM match_players WHERE server_id = ? ORDER BY last_seen DESC LIMIT 1`) as MatchPlayerSeen | undefined) ?? null;
   }
 
   insertKill(k: Kill): boolean {
-    const r = this.q.insertKill.run({
+    const r = this.root.prep(`INSERT OR IGNORE INTO kills
+      (server_id, event_id, received_at, match_key, map, event_time, killer_steam, killer_name, killer_faction,
+       victim_steam, victim_name, victim_faction, cause, weapon, distance_m, tags, headshot, suicide, teamkill, engagement_id)
+      VALUES (:sid, :eventId, :receivedAt, :matchKey, :map, :eventTime, :killerSteamId, :killerName, :killerFaction,
+       :victimSteamId, :victimName, :victimFaction, :cause, :weapon, :distanceM, :tags, :headshot, :suicide, :teamkill, :engagementId)`).run({
       ...k,
+      sid: this.id,
       tags: JSON.stringify(k.tags),
       headshot: k.headshot ? 1 : 0,
       suicide: k.suicide ? 1 : 0,
@@ -422,18 +829,23 @@ export class Store {
   }
 
   insertMatchEvent(e: MatchEvent, receivedAt: number): boolean {
-    const r = this.q.insertMatchEvent.run(
-      e.eventId, receivedAt, e.type, e.mapName ?? null, e.eventTime ?? null, e.matchId ?? null, JSON.stringify(e),
-    );
+    const r = this.#run(`INSERT OR IGNORE INTO match_events
+      (server_id, event_id, received_at, type, map, event_time, match_id, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    e.eventId, receivedAt, e.type, e.mapName ?? null, e.eventTime ?? null, e.matchId ?? null, JSON.stringify(e));
     return r.changes > 0;
   }
 
   createEngagement(matchKey: string | null, map: string | null, at: number, eventTime: number | null): number {
-    return Number(this.q.insertEngagement.run(matchKey, map, at, at, eventTime, eventTime).lastInsertRowid);
+    return Number(this.#run(`INSERT INTO engagements (server_id, match_key, map, started_at, ended_at, start_time, end_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`, matchKey, map, at, at, eventTime, eventTime).lastInsertRowid);
   }
 
   saveEngagement(e: OpenEngagement): void {
-    this.q.updateEngagement.run({
+    this.root.prep(`UPDATE engagements SET ended_at = :endedAt, end_time = :endTime, kills = :kills,
+      headshots = :headshots, teamkills = :teamkills, distance_sum = :distanceSum, distance_n = :distanceN,
+      factions = :factions, participants = :participants, weapons = :weapons WHERE id = :id AND server_id = :sid`).run({
+      sid: this.id,
       id: e.id,
       endedAt: e.endedAt,
       endTime: e.endTime,
@@ -450,70 +862,78 @@ export class Store {
 
   logAction(actor: string, action: string, target: string | null | undefined, detail: unknown, ok: boolean, error?: string | null): Action {
     const at = Date.now();
-    this.q.insertAction.run(at, actor, action, target ?? null, detail ? JSON.stringify(detail) : null, ok ? 1 : 0, error ?? null);
+    this.#run('INSERT INTO actions (server_id, at, actor, action, target, detail, ok, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      at, actor, action, target ?? null, detail ? JSON.stringify(detail) : null, ok ? 1 : 0, error ?? null);
     return { at, actor, action, target, detail, ok, error };
   }
 
   seePlayer(steamId: string, name: string | null, now: number, newSession: boolean, recordName: boolean): void {
-    this.q.upsertPlayer.run(steamId, now, now, name, newSession ? 1 : 0);
-    if (recordName && name != null) this.q.upsertName.run(steamId, name, now, now);
+    this.#run(`INSERT INTO players (server_id, steam_id, first_seen, last_seen, last_name, sessions)
+      VALUES (?, ?, ?, ?, ?, 1)
+      ON CONFLICT(server_id, steam_id) DO UPDATE SET last_seen = excluded.last_seen, last_name = excluded.last_name,
+        sessions = sessions + ?`, steamId, now, now, name, newSession ? 1 : 0);
+    if (recordName && name != null) {
+      this.#run(`INSERT INTO player_names (server_id, steam_id, name, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(server_id, steam_id, name) DO UPDATE SET last_seen = excluded.last_seen`, steamId, name, now, now);
+    }
   }
 
   addMatchPlayers(rows: MatchPlayerDelta[]): void {
     if (!rows.length) return;
-    this.db.exec('BEGIN');
-    try {
-      for (const r of rows) this.q.addMatchPlayer.run({ ...r });
-      this.db.exec('COMMIT');
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
-    }
+    const stmt = this.root.prep(`INSERT INTO match_players
+      (server_id, match_key, steam_id, map, faction, kills, deaths, cash_peak, cash_earned, first_seen, last_seen)
+      VALUES (:sid, :matchKey, :steamId, :map, :faction, :kills, :deaths, :cashPeak, :earned, :at, :at)
+      ON CONFLICT(server_id, match_key, steam_id) DO UPDATE SET
+        map = COALESCE(excluded.map, map),
+        faction = COALESCE(excluded.faction, faction),
+        kills = kills + excluded.kills,
+        deaths = deaths + excluded.deaths,
+        cash_peak = CASE WHEN cash_peak IS NULL THEN excluded.cash_peak
+          WHEN excluded.cash_peak IS NULL THEN cash_peak ELSE MAX(cash_peak, excluded.cash_peak) END,
+        cash_earned = cash_earned + excluded.cash_earned,
+        last_seen = excluded.last_seen`);
+    this.root.tx(() => {
+      for (const r of rows) stmt.run({ ...r, sid: this.id });
+    });
   }
 
   setMatchResult(matchKey: string, winningFaction: string | null | undefined, at: number): void {
-    this.db.prepare(`INSERT INTO match_results (match_key, winning_faction, ended_at) VALUES (?, ?, ?)
-      ON CONFLICT(match_key) DO UPDATE SET winning_faction = excluded.winning_faction, ended_at = excluded.ended_at`)
-      .run(matchKey, winningFaction || null, at);
+    this.#run(`INSERT INTO match_results (server_id, match_key, winning_faction, ended_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(server_id, match_key) DO UPDATE SET winning_faction = excluded.winning_faction, ended_at = excluded.ended_at`,
+    matchKey, winningFaction || null, at);
   }
 
   addReport(r: NewReport): Report {
-    const { lastInsertRowid } = this.db.prepare(`INSERT INTO reports
-      (created_at, reporter_chzzk_id, reporter_chzzk_name, reporter_steam_id, reporter_steam_name,
+    const { lastInsertRowid } = this.#run(`INSERT INTO reports
+      (server_id, created_at, reporter_chzzk_id, reporter_chzzk_name, reporter_steam_id, reporter_steam_name,
        target_name, target_steam_id, category, description, evidence_url, map)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(r.createdAt, r.reporterChzzkId, r.reporterChzzkName,
-      r.reporterSteamId, r.reporterSteamName, r.targetName, r.targetSteamId, r.category, r.description, r.evidenceUrl, r.map);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.createdAt, r.reporterChzzkId, r.reporterChzzkName,
+    r.reporterSteamId, r.reporterSteamName, r.targetName, r.targetSteamId, r.category, r.description, r.evidenceUrl, r.map);
     return this.report(Number(lastInsertRowid))!;
   }
 
   report(id: number): Report | null {
-    return (this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM reports WHERE id = ?`).get(id) as Row | undefined) as Report | undefined ?? null;
-  }
-
-  reportsByReporter(chzzkId: string, { since = 0, limit = 50 } = {}): Report[] {
-    return this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM reports
-      WHERE reporter_chzzk_id = ? AND created_at >= ?
-      ORDER BY id DESC LIMIT ?`).all(chzzkId, since, limit) as Row[] as Report[];
+    return (this.#get(`SELECT ${REPORT_COLUMNS} FROM reports WHERE server_id = ? AND id = ?`, id) as Report | undefined) ?? null;
   }
 
   reports({ status, limit = 200 }: { status?: string; limit?: number } = {}): Report[] {
-    return this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM reports WHERE (:status IS NULL OR status = :status)
-      ORDER BY id DESC LIMIT :limit`).all({ status: status ?? null, limit }) as Row[] as Report[];
+    return this.#all(`SELECT ${REPORT_COLUMNS} FROM reports WHERE server_id = ? AND (? IS NULL OR status = ?)
+      ORDER BY id DESC LIMIT ?`, status ?? null, status ?? null, limit) as Report[];
   }
 
   updateReport(id: number, status: string, note: string | null, by: string, at: number): Report | null {
-    this.db.prepare('UPDATE reports SET status = ?, note = ?, handled_by = ?, handled_at = ? WHERE id = ?').run(status, note, by, at, id);
+    this.root.prep('UPDATE reports SET status = ?, note = ?, handled_by = ?, handled_at = ? WHERE server_id = ? AND id = ?')
+      .run(status, note, by, at, this.id, id);
     return this.report(id);
   }
 
   steamIdByName(name: string): string | null {
-    const r = this.db.prepare('SELECT steam_id FROM player_names WHERE name = ? ORDER BY last_seen DESC LIMIT 1').get(name) as Row | undefined;
-    return r?.steam_id ?? null;
+    return this.#get('SELECT steam_id FROM player_names WHERE server_id = ? AND name = ? ORDER BY last_seen DESC LIMIT 1', name)?.steam_id ?? null;
   }
 
   recentKills({ limit = 100, before, search }: { limit?: number; before?: number; search?: string } = {}): Kill[] {
-    const where: string[] = [];
-    const args: Record<string, string | number> = {};
+    const where = ['server_id = :sid'];
+    const args: Record<string, string | number> = { sid: this.id };
     if (before) { where.push('received_at < :before'); args.before = before; }
     if (search) {
       where.push('(killer_name LIKE :s OR victim_name LIKE :s OR weapon LIKE :s OR cause LIKE :s OR killer_steam = :raw OR victim_steam = :raw)');
@@ -521,46 +941,46 @@ export class Store {
       args.raw = search;
     }
     args.limit = Math.min(limit, 500);
-    const sql = `SELECT * FROM kills ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY received_at DESC, event_time DESC LIMIT :limit`;
-    return this.db.prepare(sql).all(args).map(rowToKill);
+    const sql = `SELECT * FROM kills WHERE ${where.join(' AND ')} ORDER BY received_at DESC, event_time DESC LIMIT :limit`;
+    return this.root.prep(sql).all(args).map(rowToKill);
   }
 
   recentEngagements({ limit = 30, minKills = 1 } = {}): Engagement[] {
-    return this.db.prepare('SELECT * FROM engagements WHERE kills >= ? ORDER BY started_at DESC LIMIT ?')
-      .all(minKills, limit).map(rowToEngagement);
+    return this.#all('SELECT * FROM engagements WHERE server_id = ? AND kills >= ? ORDER BY started_at DESC LIMIT ?', minKills, limit)
+      .map(rowToEngagement);
   }
 
   engagementKills(id: number): Kill[] {
-    return this.db.prepare('SELECT * FROM kills WHERE engagement_id = ? ORDER BY received_at, event_time').all(id).map(rowToKill);
+    return this.#all('SELECT * FROM kills WHERE server_id = ? AND engagement_id = ? ORDER BY received_at, event_time', id).map(rowToKill);
   }
 
   matchStats(matchKey: string | null) {
     if (!matchKey) return [];
-    return this.q.matchStats.all(matchKey);
+    return this.#all(`
+      SELECT killer_steam AS steamId, COUNT(*) AS kills, SUM(headshot) AS headshots, SUM(teamkill) AS teamkills,
+             MAX(distance_m) AS maxDistance
+      FROM kills WHERE server_id = ? AND match_key = ? AND killer_steam IS NOT NULL AND suicide = 0
+      GROUP BY killer_steam`, matchKey);
   }
 
   weaponStats({ since = 0, limit = 30 } = {}) {
-    return this.db.prepare(`
+    return this.#all(`
       SELECT weapon, COUNT(*) AS kills, SUM(headshot) AS headshots, AVG(distance_m) AS avgDistance, MAX(distance_m) AS maxDistance
-      FROM kills WHERE received_at >= ? AND weapon IS NOT NULL AND suicide = 0
-      GROUP BY weapon ORDER BY kills DESC LIMIT ?`).all(since, limit);
+      FROM kills WHERE server_id = ? AND received_at >= ? AND weapon IS NOT NULL AND suicide = 0
+      GROUP BY weapon ORDER BY kills DESC LIMIT ?`, since, limit);
   }
 
   recentMatchEvents(limit = 50): (MatchEvent & { receivedAt: number })[] {
-    return (this.db.prepare('SELECT * FROM match_events ORDER BY received_at DESC LIMIT ?').all(limit) as Row[])
+    return this.#all('SELECT * FROM match_events WHERE server_id = ? ORDER BY received_at DESC LIMIT ?', limit)
       .map((r) => ({ ...JSON.parse(r.payload), receivedAt: r.received_at }));
   }
 
   logFeedRequest(r: FeedRequest): void {
-    const id = Number(this.q.insertFeedRequest.run({
-      at: r.at, peer: r.peer ?? null, status: r.status, code: r.code ?? null, events: r.events ?? null,
-      accepted: r.accepted ?? null, duplicates: r.duplicates ?? null, error: r.error ? String(r.error).slice(0, 200) : null,
-    }).lastInsertRowid);
-    this.q.pruneFeedRequests.run(id - FEED_REQUEST_KEEP);
+    this.root.logFeedRequest(this.id, r);
   }
 
   feedRequests(limit = 300) {
-    return this.db.prepare('SELECT * FROM feed_requests ORDER BY id DESC LIMIT ?').all(limit);
+    return this.#all('SELECT * FROM feed_requests WHERE server_id = ? ORDER BY id DESC LIMIT ?', limit);
   }
 
   feedEvents(limit = 300) {
@@ -569,253 +989,155 @@ export class Store {
   }
 
   actions({ limit = 200 } = {}): Action[] {
-    return (this.db.prepare('SELECT * FROM actions ORDER BY at DESC LIMIT ?').all(limit) as Row[])
+    return this.#all('SELECT * FROM actions WHERE server_id = ? ORDER BY at DESC LIMIT ?', limit)
       .map((r) => ({ ...r, ok: !!r.ok, detail: r.detail ? JSON.parse(r.detail) : null }) as Action);
   }
 
   playerProfile(steamId: string) {
-    const p = this.db.prepare('SELECT * FROM players WHERE steam_id = ?').get(steamId);
-    const names = this.db.prepare('SELECT name, first_seen, last_seen FROM player_names WHERE steam_id = ? ORDER BY last_seen DESC').all(steamId);
-    const totals = this.db.prepare(`SELECT
+    const p = this.#get('SELECT * FROM players WHERE server_id = ? AND steam_id = ?', steamId);
+    const names = this.#all('SELECT name, first_seen, last_seen FROM player_names WHERE server_id = ? AND steam_id = ? ORDER BY last_seen DESC', steamId);
+    const totals = this.root.prep(`SELECT
         SUM(CASE WHEN killer_steam = :s AND suicide = 0 THEN 1 ELSE 0 END) AS kills,
         SUM(CASE WHEN victim_steam = :s THEN 1 ELSE 0 END) AS deaths,
         SUM(CASE WHEN killer_steam = :s AND headshot = 1 AND suicide = 0 THEN 1 ELSE 0 END) AS headshots,
         SUM(CASE WHEN killer_steam = :s AND teamkill = 1 THEN 1 ELSE 0 END) AS teamkills
-      FROM kills WHERE killer_steam = :s OR victim_steam = :s`).get({ s: steamId });
-    const weapons = this.db.prepare(`SELECT weapon, COUNT(*) AS kills FROM kills
-      WHERE killer_steam = ? AND suicide = 0 GROUP BY weapon ORDER BY kills DESC LIMIT 8`).all(steamId);
+      FROM kills WHERE server_id = :sid AND (killer_steam = :s OR victim_steam = :s)`).get({ s: steamId, sid: this.id });
+    const weapons = this.#all(`SELECT weapon, COUNT(*) AS kills FROM kills
+      WHERE server_id = ? AND killer_steam = ? AND suicide = 0 GROUP BY weapon ORDER BY kills DESC LIMIT 8`, steamId);
     return { player: p ?? null, names, totals, weapons };
   }
 
   pendingBans(): PendingBan[] {
-    return this.q.pendingBans.all() as Row[] as PendingBan[];
+    return this.#all('SELECT steam_id, reason, created_at, created_by, last_error FROM pending_bans WHERE server_id = ? ORDER BY created_at DESC') as PendingBan[];
   }
 
   addPendingBan(steamId: string, reason: string | null, by: string): void {
-    this.db.prepare(`INSERT INTO pending_bans (steam_id, reason, created_at, created_by) VALUES (?, ?, ?, ?)
-      ON CONFLICT(steam_id) DO UPDATE SET reason = excluded.reason`).run(steamId, reason ?? null, Date.now(), by);
+    this.#run(`INSERT INTO pending_bans (server_id, steam_id, reason, created_at, created_by) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(server_id, steam_id) DO UPDATE SET reason = excluded.reason`, steamId, reason ?? null, Date.now(), by);
   }
 
   removePendingBan(steamId: string): boolean {
-    return this.db.prepare('DELETE FROM pending_bans WHERE steam_id = ?').run(steamId).changes > 0;
+    return this.#run('DELETE FROM pending_bans WHERE server_id = ? AND steam_id = ?', steamId).changes > 0;
   }
 
   notePendingBanError(steamId: string, error: string): void {
-    this.db.prepare('UPDATE pending_bans SET last_error = ? WHERE steam_id = ?').run(error, steamId);
+    this.root.prep('UPDATE pending_bans SET last_error = ? WHERE server_id = ? AND steam_id = ?').run(error, this.id, steamId);
   }
 
   links(): LinkWithSeen[] {
-    return (this.db.prepare(`SELECT ${LINK_COLUMNS}, p.last_name AS lastName, p.last_seen AS lastSeen
-      FROM account_links a LEFT JOIN players p ON p.steam_id = a.steam_id
-      ORDER BY a.linked_at DESC`).all() as Row[]).map((r) => ({ ...rowToLink(r), lastName: r.lastName, lastSeen: r.lastSeen }));
+    return this.#all(`SELECT ${LINK_COLUMNS}, p.last_name AS lastName, p.last_seen AS lastSeen
+      FROM account_links a LEFT JOIN players p ON p.server_id = ? AND p.steam_id = a.steam_id
+      ORDER BY a.linked_at DESC`).map((r) => ({ ...rowToLink(r), lastName: r.lastName, lastSeen: r.lastSeen }));
   }
 
   linkByAccount(provider: 'chzzk' | 'steam', id: string): Link | null {
-    const col = provider === 'chzzk' ? 'chzzk_channel_id' : 'steam_id';
-    const r = this.db.prepare(`SELECT ${LINK_COLUMNS} FROM account_links a WHERE a.${col} = ?`).get(id) as Row | undefined;
-    return r ? rowToLink(r) : null;
-  }
-
-  saveLink(steamId: string, steamName: string, chzzkChannelId: string, chzzkName: string, linkedAt: string): void {
-    this.db.exec('BEGIN');
-    try {
-      this.db.prepare('DELETE FROM account_links WHERE steam_id = ? OR chzzk_channel_id = ?').run(steamId, chzzkChannelId);
-      this.db.prepare('INSERT INTO account_links (steam_id, steam_name, chzzk_channel_id, chzzk_name, linked_at) VALUES (?, ?, ?, ?, ?)')
-        .run(steamId, steamName, chzzkChannelId, chzzkName, linkedAt);
-      this.db.exec('COMMIT');
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
-    }
-  }
-
-  linkIfFree(steam: { id: string; name: string }, chzzk: { id: string; name: string }, linkedAt: string): boolean {
-    const taken = [this.linkByAccount('steam', steam.id), this.linkByAccount('chzzk', chzzk.id)]
-      .some((l) => l && (l.steamId !== steam.id || l.chzzkChannelId !== chzzk.id));
-    if (taken) return false;
-    this.saveLink(steam.id, steam.name, chzzk.id, chzzk.name, linkedAt);
-    return true;
-  }
-
-  unlink(steamId: string): void {
-    this.db.prepare('DELETE FROM account_links WHERE steam_id = ?').run(steamId);
+    return this.root.linkByAccount(provider, id);
   }
 
   linksBySteam(steamIds: string[]): Map<string, Link> {
-    if (!steamIds.length) return new Map();
-    const rows = this.q.linksBySteam.all(JSON.stringify(steamIds)) as Row[];
-    return new Map(rows.map((r) => [r.steamId, rowToLink(r)]));
+    return this.root.linksBySteam(steamIds);
   }
 
   discordLink(by: 'discord' | 'steam', id: string): DiscordLink | null {
     const col = by === 'discord' ? 'discord_id' : 'steam_id';
-    const r = this.db.prepare(`SELECT ${DISCORD_COLUMNS} FROM discord_links WHERE ${col} = ?`).get(id) as Row | undefined;
+    const r = this.#get(`SELECT ${DISCORD_COLUMNS} FROM discord_links WHERE server_id = ? AND ${col} = ?`, id);
     return r ? rowToDiscordLink(r) : null;
   }
 
-  discordLinks({ unreserved = false } = {}): DiscordLink[] {
-    return (this.db.prepare(`SELECT ${DISCORD_COLUMNS} FROM discord_links ${unreserved ? 'WHERE reserved = 0' : ''}
-      ORDER BY linked_at DESC`).all() as Row[]).map(rowToDiscordLink);
-  }
-
-  saveDiscordLink(discordId: string, discordName: string, link: StreamerPair, at: number): void {
-    this.db.prepare(`INSERT INTO discord_links (discord_id, discord_name, steam_id, steam_name, chzzk_channel_id, chzzk_name, linked_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(discord_id) DO UPDATE SET discord_name = excluded.discord_name, steam_name = excluded.steam_name,
-        chzzk_channel_id = excluded.chzzk_channel_id, chzzk_name = excluded.chzzk_name, linked_at = excluded.linked_at,
-        reserved = CASE WHEN steam_id = excluded.steam_id THEN reserved ELSE 0 END,
-        last_error = CASE WHEN steam_id = excluded.steam_id THEN last_error ELSE NULL END,
-        steam_id = excluded.steam_id`).run(discordId, discordName, link.steamId, link.steamName, link.chzzkChannelId, link.chzzkName, at);
+  discordLinks(): DiscordLink[] {
+    return this.#all(`SELECT ${DISCORD_COLUMNS} FROM discord_links WHERE server_id = ? ORDER BY linked_at DESC`).map(rowToDiscordLink);
   }
 
   discordLinksBySteam(steamIds: string[]): Map<string, DiscordLink> {
     if (!steamIds.length) return new Map();
-    const rows = this.db.prepare(`SELECT ${DISCORD_COLUMNS} FROM discord_links
-      WHERE steam_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(steamIds)) as Row[];
+    const rows = this.#all(`SELECT ${DISCORD_COLUMNS} FROM discord_links
+      WHERE server_id = ? AND steam_id IN (SELECT value FROM json_each(?))`, JSON.stringify(steamIds));
     return new Map(rows.map((r) => [r.steamId, rowToDiscordLink(r)]));
   }
 
+  saveDiscordLink(discordId: string, discordName: string, link: StreamerPair, at: number): void {
+    this.#run(`INSERT INTO discord_links (server_id, discord_id, discord_name, steam_id, steam_name, chzzk_channel_id, chzzk_name, linked_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(server_id, discord_id) DO UPDATE SET discord_name = excluded.discord_name, steam_name = excluded.steam_name,
+        chzzk_channel_id = excluded.chzzk_channel_id, chzzk_name = excluded.chzzk_name, linked_at = excluded.linked_at,
+        reserved = CASE WHEN steam_id = excluded.steam_id THEN reserved ELSE 0 END,
+        last_error = CASE WHEN steam_id = excluded.steam_id THEN last_error ELSE NULL END,
+        steam_id = excluded.steam_id`, discordId, discordName, link.steamId, link.steamName, link.chzzkChannelId, link.chzzkName, at);
+  }
+
   removeDiscordLink(discordId: string): void {
-    this.db.prepare('DELETE FROM discord_links WHERE discord_id = ?').run(discordId);
+    this.#run('DELETE FROM discord_links WHERE server_id = ? AND discord_id = ?', discordId);
   }
 
   markDiscordReserved(steamId: string, error: string | null): void {
-    this.db.prepare('UPDATE discord_links SET reserved = ?, last_error = ? WHERE steam_id = ?').run(error ? 0 : 1, error, steamId);
+    this.root.prep('UPDATE discord_links SET reserved = ?, last_error = ? WHERE server_id = ? AND steam_id = ?').run(error ? 0 : 1, error, this.id, steamId);
   }
 
   discordReleases(): string[] {
-    return (this.db.prepare('SELECT steam_id FROM discord_releases ORDER BY created_at').all() as Row[]).map((r) => r.steam_id);
+    return this.#all('SELECT steam_id FROM discord_releases WHERE server_id = ? ORDER BY created_at').map((r) => r.steam_id);
   }
 
   addDiscordRelease(steamId: string): void {
-    this.db.prepare('INSERT OR IGNORE INTO discord_releases (steam_id, created_at) VALUES (?, ?)').run(steamId, Date.now());
+    this.#run('INSERT OR IGNORE INTO discord_releases (server_id, steam_id, created_at) VALUES (?, ?, ?)', steamId, Date.now());
   }
 
   removeDiscordRelease(steamId: string): void {
-    this.db.prepare('DELETE FROM discord_releases WHERE steam_id = ?').run(steamId);
+    this.#run('DELETE FROM discord_releases WHERE server_id = ? AND steam_id = ?', steamId);
   }
 
   whitelist(): Whitelist {
-    const row = this.q.whitelist.get() as Row | undefined;
-    return { ...WHITELIST_DEFAULT, ...(row ? JSON.parse(row.value) : {}) };
+    return { ...WHITELIST_DEFAULT, ...this.#setting('whitelist', {}) };
   }
 
   setWhitelist(value: Whitelist): void {
-    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('whitelist', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
+    this.#setSetting('whitelist', value);
   }
 
   entryGate(): EntryGate {
-    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'entry_gate'").get() as Row | undefined;
-    return { ...ENTRY_GATE_DEFAULT, ...(row ? JSON.parse(row.value) : {}) };
+    return { ...ENTRY_GATE_DEFAULT, ...this.#setting('entry_gate', {}) };
   }
 
   setEntryGate(value: EntryGate): void {
-    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('entry_gate', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
+    this.#setSetting('entry_gate', value);
   }
 
   turnover(): Turnover {
-    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'turnover'").get() as Row | undefined;
-    return { ...TURNOVER_DEFAULT, ...(row ? JSON.parse(row.value) : {}) };
+    return { ...TURNOVER_DEFAULT, ...this.#setting('turnover', {}) };
   }
 
   setTurnover(value: Turnover): void {
-    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('turnover', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
-  }
-
-  rconTarget(): RconTarget {
-    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'rcon'").get() as Row | undefined;
-    return row ? JSON.parse(row.value) : {};
-  }
-
-  setRconTarget(value: RconTarget): void {
-    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('rcon', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(value));
+    this.#setSetting('turnover', value);
   }
 
   configPresets(): ConfigPreset[] {
-    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'config_presets'").get() as Row | undefined;
-    return row ? JSON.parse(row.value) : [];
+    return this.#setting('config_presets', []);
   }
 
   setConfigPresets(list: ConfigPreset[]): void {
-    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('config_presets', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(list));
+    this.#setSetting('config_presets', list);
   }
 
   whitelistBans(): WhitelistBan[] {
-    return (this.q.whitelistBans.all() as Row[]).map((r) => ({ ...r, linked: !!r.linked }) as WhitelistBan);
+    return this.root.prep(`SELECT w.steam_id AS steamId, w.name, w.created_at AS createdAt, w.last_error AS lastError,
+        (a.steam_id IS NOT NULL OR d.steam_id IS NOT NULL) AS linked
+      FROM whitelist_bans w LEFT JOIN account_links a ON a.steam_id = w.steam_id
+      LEFT JOIN discord_links d ON d.server_id = w.server_id AND d.steam_id = w.steam_id
+      WHERE w.server_id = ?
+      ORDER BY w.created_at DESC`).all(this.id).map((r) => ({ ...r, linked: !!r.linked }) as WhitelistBan);
   }
 
   addWhitelistBan(steamId: string, name: string | null | undefined): void {
-    this.db.prepare(`INSERT INTO whitelist_bans (steam_id, name, created_at) VALUES (?, ?, ?)
-      ON CONFLICT(steam_id) DO UPDATE SET last_error = NULL`).run(steamId, name ?? null, Date.now());
+    this.#run(`INSERT INTO whitelist_bans (server_id, steam_id, name, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(server_id, steam_id) DO UPDATE SET last_error = NULL`, steamId, name ?? null, Date.now());
   }
 
   removeWhitelistBan(steamId: string): void {
-    this.db.prepare('DELETE FROM whitelist_bans WHERE steam_id = ?').run(steamId);
+    this.#run('DELETE FROM whitelist_bans WHERE server_id = ? AND steam_id = ?', steamId);
   }
 
   noteWhitelistBanError(steamId: string, error: string): void {
-    this.db.prepare('UPDATE whitelist_bans SET last_error = ? WHERE steam_id = ?').run(error, steamId);
+    this.root.prep('UPDATE whitelist_bans SET last_error = ? WHERE server_id = ? AND steam_id = ?').run(error, this.id, steamId);
   }
-}
-
-function prepareQueries(db: DatabaseSync) {
-  return {
-    hasKill: db.prepare('SELECT 1 FROM kills WHERE event_id = ?'),
-    matchStats: db.prepare(`
-      SELECT killer_steam AS steamId, COUNT(*) AS kills, SUM(headshot) AS headshots, SUM(teamkill) AS teamkills,
-             MAX(distance_m) AS maxDistance
-      FROM kills WHERE match_key = ? AND killer_steam IS NOT NULL AND suicide = 0
-      GROUP BY killer_steam`),
-    pendingBans: db.prepare('SELECT * FROM pending_bans ORDER BY created_at DESC'),
-    linksBySteam: db.prepare(`SELECT ${LINK_COLUMNS} FROM account_links a
-      WHERE a.steam_id IN (SELECT value FROM json_each(?))`),
-    whitelist: db.prepare("SELECT value FROM settings WHERE key = 'whitelist'"),
-    whitelistBans: db.prepare(`SELECT w.steam_id AS steamId, w.name, w.created_at AS createdAt, w.last_error AS lastError,
-        (a.steam_id IS NOT NULL OR d.steam_id IS NOT NULL) AS linked
-      FROM whitelist_bans w LEFT JOIN account_links a ON a.steam_id = w.steam_id
-      LEFT JOIN discord_links d ON d.steam_id = w.steam_id
-      ORDER BY w.created_at DESC`),
-    insertKill: db.prepare(`INSERT OR IGNORE INTO kills
-      (event_id, received_at, match_key, map, event_time, killer_steam, killer_name, killer_faction,
-       victim_steam, victim_name, victim_faction, cause, weapon, distance_m, tags, headshot, suicide, teamkill, engagement_id)
-      VALUES (:eventId, :receivedAt, :matchKey, :map, :eventTime, :killerSteamId, :killerName, :killerFaction,
-       :victimSteamId, :victimName, :victimFaction, :cause, :weapon, :distanceM, :tags, :headshot, :suicide, :teamkill, :engagementId)`),
-    insertMatchEvent: db.prepare(`INSERT OR IGNORE INTO match_events
-      (event_id, received_at, type, map, event_time, match_id, payload)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`),
-    insertEngagement: db.prepare(`INSERT INTO engagements (match_key, map, started_at, ended_at, start_time, end_time)
-      VALUES (?, ?, ?, ?, ?, ?)`),
-    updateEngagement: db.prepare(`UPDATE engagements SET ended_at = :endedAt, end_time = :endTime, kills = :kills,
-      headshots = :headshots, teamkills = :teamkills, distance_sum = :distanceSum, distance_n = :distanceN,
-      factions = :factions, participants = :participants, weapons = :weapons WHERE id = :id`),
-    insertFeedRequest: db.prepare(`INSERT INTO feed_requests (at, peer, status, code, events, accepted, duplicates, error)
-      VALUES (:at, :peer, :status, :code, :events, :accepted, :duplicates, :error)`),
-    pruneFeedRequests: db.prepare('DELETE FROM feed_requests WHERE id <= ?'),
-    insertAction: db.prepare(`INSERT INTO actions (at, actor, action, target, detail, ok, error) VALUES (?, ?, ?, ?, ?, ?, ?)`),
-    upsertPlayer: db.prepare(`INSERT INTO players (steam_id, first_seen, last_seen, last_name, sessions)
-      VALUES (?, ?, ?, ?, 1)
-      ON CONFLICT(steam_id) DO UPDATE SET last_seen = excluded.last_seen, last_name = excluded.last_name,
-        sessions = sessions + ?`),
-    addMatchPlayer: db.prepare(`INSERT INTO match_players
-      (match_key, steam_id, map, faction, kills, deaths, cash_peak, cash_earned, first_seen, last_seen)
-      VALUES (:matchKey, :steamId, :map, :faction, :kills, :deaths, :cashPeak, :earned, :at, :at)
-      ON CONFLICT(match_key, steam_id) DO UPDATE SET
-        map = COALESCE(excluded.map, map),
-        faction = COALESCE(excluded.faction, faction),
-        kills = kills + excluded.kills,
-        deaths = deaths + excluded.deaths,
-        cash_peak = CASE WHEN cash_peak IS NULL THEN excluded.cash_peak
-          WHEN excluded.cash_peak IS NULL THEN cash_peak ELSE MAX(cash_peak, excluded.cash_peak) END,
-        cash_earned = cash_earned + excluded.cash_earned,
-        last_seen = excluded.last_seen`),
-    upsertName: db.prepare(`INSERT INTO player_names (steam_id, name, first_seen, last_seen) VALUES (?, ?, ?, ?)
-      ON CONFLICT(steam_id, name) DO UPDATE SET last_seen = excluded.last_seen`),
-  };
 }
 
 function sqlTimeToMs(v: unknown): number | null {

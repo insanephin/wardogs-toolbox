@@ -16,6 +16,23 @@ class VerifyUrls(BaseModel):
     steam: str
 
 
+class TicketServer(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    join_url: Optional[str] = Field(default=None, alias="joinUrl")
+
+
+class PanelServer(BaseModel):
+    id: int
+    name: str
+
+
+class AdminServers(BaseModel):
+    linked: bool
+    servers: list[PanelServer]
+
+
 class Ticket(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -23,6 +40,7 @@ class Ticket(BaseModel):
     urls: VerifyUrls
     expires_at: int = Field(alias="expiresAt")
     link: Optional[StreamerLink] = None
+    server: Optional[TicketServer] = None
 
 
 class TicketState(BaseModel):

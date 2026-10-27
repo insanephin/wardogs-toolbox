@@ -28,7 +28,7 @@ export interface SettingField {
 export const SETTING_FIELDS: SettingField[] = [
   { key: 'serverName', label: '서버 이름', type: 'text', section: S_SESSION, ini: 'ServerName', def: '', maxLength: 64 },
   { key: 'maxPlayers', label: '최대 인원', type: 'number', section: S_ENGINE, ini: 'MaxPlayers', def: 128, min: 1 },
-  { key: 'serverPassword', label: '접속 비밀번호', type: 'text', section: S_SESSION, ini: 'ServerPassword', def: '', maxLength: 64, secret: true, hint: '비워 두면 누구나 들어옵니다.' },
+  { key: 'serverPassword', label: '접속 비밀번호', type: 'text', section: S_SESSION, ini: 'ServerPassword', def: '', maxLength: 64, secret: true, hint: '비워 두면 누구나 들어오고, 공개 서버로 표시됩니다.' },
   { key: 'minPlayerCash', label: '최소 소지금', type: 'number', section: S_SESSION, ini: 'ServerMinPlayerCash', def: 0, min: 0, hint: '0은 제한 없음' },
   { key: 'maxPlayerCash', label: '최대 소지금', type: 'number', section: S_SESSION, ini: 'ServerMaxPlayerCash', def: 0, min: 0, hint: '0은 제한 없음' },
   { key: 'minPlayerLevel', label: '최소 레벨', type: 'number', section: S_SESSION, ini: 'ServerMinPlayerLevel', def: 0, min: 0, hint: '0은 제한 없음' },

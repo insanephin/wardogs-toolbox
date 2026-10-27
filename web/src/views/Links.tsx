@@ -7,15 +7,20 @@ import { confirmAction } from '../lib/modal.tsx';
 import { fmtTime, charCount } from '../lib/format.ts';
 import { Card, Empty, useOnAction } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
+import { SortTable } from '../components/sortTable.tsx';
 import { IconButton } from '../components/iconButton.tsx';
 import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
 
 const WHITELIST_LABELS: Record<WhitelistMode, string> = { off: '꺼짐', kick: '미연동 킥', ban: '미연동 밴' };
-const MODE_HELP: Record<WhitelistMode, string> = {
-  off: '누구나 접속할 수 있습니다.',
-  kick: '웹 연동(스팀+치지직)도 화이트리스트 등록(디스코드)도 하지 않은 플레이어를 입장하자마자 킥합니다. 인증 후 바로 다시 들어올 수 있습니다.',
-  ban: '웹 연동(스팀+치지직)도 화이트리스트 등록(디스코드)도 하지 않은 플레이어를 밴합니다. 인증하면 자동으로 밴이 풀립니다.',
-};
+
+function KickMessage({ label, rows = 2, value, disabled, onChange }: { label: string; rows?: number; value: string; disabled: boolean; onChange: (v: string) => void }) {
+  return (
+    <label className="field">
+      <span className="field-label"><span>{label}</span><span>{`${charCount(value)}/200`}</span></span>
+      <textarea rows={rows} maxLength={200} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+}
 
 export default function Links() {
   const [links, setLinks] = useState<OrError<LinkRow[]> | null>(null);
@@ -62,14 +67,11 @@ export default function Links() {
           {!links || !streamers ? <Empty><Spinner /></Empty>
             : loadError ? <Empty>불러오지 못했습니다: {loadError}</Empty>
               : tab === 'viewer'
-                ? (!viewerRows.length ? <Empty>{viewers.length ? '조건에 맞는 계정이 없습니다.' : '아직 연동한 시청자가 없습니다. 연동 페이지(/)를 안내해 주세요.'}</Empty>
+                ? (!viewerRows.length ? <Empty>{viewers.length ? '조건에 맞는 계정이 없습니다.' : '연동한 시청자가 없습니다.'}</Empty>
                   : <LinkTable rows={viewerRows} onChanged={load} />)
-                : (!streamerRows.length ? <Empty>{streamerList.length ? '조건에 맞는 화이트리스트 유저가 없습니다.' : '아직 화이트리스트에 등록한 유저가 없습니다. 디스코드 패널을 안내해 주세요.'}</Empty>
+                : (!streamerRows.length ? <Empty>{streamerList.length ? '조건에 맞는 화이트리스트 유저가 없습니다.' : '화이트리스트 유저가 없습니다.'}</Empty>
                   : <StreamerTable rows={streamerRows} onChanged={load} />)}
         </div></div>
-        <p className="card-foot muted small">{tab === 'viewer'
-          ? <>시청자는 <a href="/" className="link">연동 페이지</a>에서 치지직과 스팀에 모두 로그인해야 연동됩니다.</>
-          : '화이트리스트는 디스코드에서 스팀(치지직은 선택)으로 등록하며, 모두 예약 슬롯에 자동으로 들어갑니다.'}</p>
       </Card>
       <div className="stack">
         <Card title="화이트리스트 우선 입장"><EntryGateForm /></Card>
@@ -83,34 +85,31 @@ export default function Links() {
 
 function LinkTable({ rows, onChanged }: { rows: LinkRow[]; onChanged: () => void }) {
   const online = new Set((useStore((s) => s.live)?.players || []).map((p) => p.steamId));
-  const mod = can('mod');
+  const mod = useStore((s) => !!s.me?.superadmin);
   const unlink = async (l: LinkRow) => {
     const name = l.lastName || l.steamName || l.steamId;
     if (!(await confirmAction('연동 해제', `${name}의 연동을 해제합니다. 화이트리스트가 켜져 있으면 이 플레이어는 다시 등록하기 전까지 서버에 들어올 수 없습니다.`, { confirm: '해제' }))) return;
     if (await run('연동 해제', 'DELETE', `/api/links/${l.steamId}`)) onChanged();
   };
   return (
-    <table className="table">
-      <thead><tr><th>스팀</th><th>치지직</th><th>연동 시각</th>{mod ? <th /> : null}</tr></thead>
-      <tbody>
-        {rows.map((l) => (
-          <tr key={l.steamId}>
-            <td>
-              <div className="pname">
-                {l.lastName || l.steamName}
-                {online.has(l.steamId) ? <> <span className="tag tag-hs">접속 중</span></> : null}
-              </div>
-              <div className="mono muted small">{l.steamId}</div>
-            </td>
-            <td>
-              <a className="link" href={`https://chzzk.naver.com/${l.chzzkChannelId}`} target="_blank" rel="noopener noreferrer">{l.chzzkName || l.chzzkChannelId}</a>
-            </td>
-            <td className="muted small nowrap">{fmtTime(l.linkedAt)}</td>
-            {mod ? <td className="nowrap"><button className="btn btn-sm btn-danger-outline" type="button" onClick={() => unlink(l)}>연동 해제</button></td> : null}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <SortTable rows={rows} rowKey={(l) => l.steamId} initial={{ key: 'linkedAt', dir: -1 }} columns={[
+      { key: 'steam', label: '스팀', sort: (l) => l.lastName || l.steamName, render: (l) => (
+        <>
+          <div className="pname">
+            {l.lastName || l.steamName}
+            {online.has(l.steamId) ? <> <span className="tag tag-hs">접속 중</span></> : null}
+          </div>
+          <div className="mono muted small">{l.steamId}</div>
+        </>
+      ) },
+      { key: 'chzzk', label: '치지직', sort: (l) => l.chzzkName || l.chzzkChannelId, render: (l) => (
+        <a className="link" href={`https://chzzk.naver.com/${l.chzzkChannelId}`} target="_blank" rel="noopener noreferrer">{l.chzzkName || l.chzzkChannelId}</a>
+      ) },
+      { key: 'linkedAt', label: '연동 시각', desc: true, sort: (l) => l.linkedAt, className: 'muted small nowrap', render: (l) => fmtTime(l.linkedAt) },
+      ...(mod ? [{ key: 'actions', label: <span className="sr-only">작업</span>, className: 'actions', render: (l: LinkRow) => (
+        <button className="btn btn-sm btn-danger-outline" type="button" onClick={() => unlink(l)}>연동 해제</button>
+      ) }] : []),
+    ]} />
   );
 }
 
@@ -145,7 +144,6 @@ function EntryGateForm() {
           {`입장 제한 중 · 화이트리스트 ${gate.streamersOnline}/${gate.threshold}명 접속${gate.openAt ? ` · ${fmtTime(gate.openAt)}에 자동 해제` : ''}`}
         </div>
       ) : <p className="muted small">{`꺼짐 · 지금 접속 중인 화이트리스트 ${gate.streamersOnline}명`}</p>}
-      <p className="muted small">켜 두면 화이트리스트가 아닌 플레이어는 입장하자마자 킥됩니다. 화이트리스트가 정한 인원만큼 들어오거나 시간이 지나면 자동으로 풀립니다.</p>
       <div className="toolbar">
         <label className="field">
           <span className="field-label"><span>화이트리스트 인원</span></span>
@@ -156,16 +154,13 @@ function EntryGateForm() {
           <input type="number" min={0} max={180} value={minutes} disabled={!editable} onChange={(e) => setMinutes(e.target.value)} />
         </label>
       </div>
-      <label className="field">
-        <span className="field-label"><span>안내 문구 (킥 사유로 보임)</span><span>{`${charCount(message)}/200`}</span></span>
-        <textarea rows={2} maxLength={200} value={message} disabled={!editable} onChange={(e) => setMessage(e.target.value)} />
-      </label>
+      <KickMessage label="안내 문구 (킥 사유로 보임)" value={message} disabled={!editable} onChange={setMessage} />
       {editable ? (
         <div className="toolbar">
           <button className="btn btn-primary" type="submit" disabled={!message.trim() || !(Number(threshold) >= 1)}>{gate.active ? '설정 변경' : '입장 제한 시작'}</button>
           {gate.active ? <button className="btn" type="button" onClick={stop}>입장 제한 해제</button> : null}
         </div>
-      ) : <p className="muted small">변경은 관리자만 할 수 있습니다.</p>}
+      ) : null}
     </form>
   );
 }
@@ -189,16 +184,13 @@ function TurnoverForm() {
           {`교대 중 · 킥 대기 ${turnover.pending}명 · 재입장 차단 ${turnover.blocked}명${turnover.blockedUntil ? ` (${fmtTime(turnover.blockedUntil)}까지)` : ''}`}
         </div>
       ) : <p className="muted small">{turnover.enabled ? '켜짐 · 다음 매치 종료 화면에서 실행됩니다' : '꺼짐'}</p>}
-      <label className="field">
-        <span className="field-label"><span>안내 문구 (킥 사유로 보임)</span><span>{`${charCount(message)}/200`}</span></span>
-        <textarea rows={2} maxLength={200} value={message} disabled={!editable} onChange={(e) => setMessage(e.target.value)} />
-      </label>
+      <KickMessage label="안내 문구 (킥 사유로 보임)" value={message} disabled={!editable} onChange={setMessage} />
       {editable ? (
         <div className="toolbar">
           <button className="btn btn-primary" type="button" disabled={!message.trim()} onClick={() => save(!turnover.enabled)}>{turnover.enabled ? '끄기' : '켜기'}</button>
           {turnover.enabled ? <button className="btn" type="submit" disabled={!message.trim() || message.trim() === turnover.message}>문구 저장</button> : null}
         </div>
-      ) : <p className="muted small">변경은 관리자만 할 수 있습니다.</p>}
+      ) : null}
     </form>
   );
 }
@@ -212,33 +204,30 @@ function StreamerTable({ rows, onChanged }: { rows: Streamer[]; onChanged: () =>
     if (await run('화이트리스트 해제', 'DELETE', `/api/streamers/${s.discordId}`)) onChanged();
   };
   return (
-    <table className="table">
-      <thead><tr><th>디스코드</th><th>스팀</th><th>치지직</th><th>인증 시각</th>{mod ? <th /> : null}</tr></thead>
-      <tbody>
-        {rows.map((s) => (
-          <tr key={s.discordId}>
-            <td>
-              <div className="pname">
-                {s.discordName || s.discordId}
-                {online.has(s.steamId) ? <> <span className="tag tag-hs">접속 중</span></> : null}
-              </div>
-              {s.lastError ? <div className="small danger">{`예약 슬롯 등록 재시도 중: ${s.lastError}`}</div> : null}
-            </td>
-            <td>
-              <div>{s.steamName ?? '—'}</div>
-              <div className="mono muted small">{s.steamId}</div>
-            </td>
-            <td>
-              {s.chzzkChannelId
-                ? <a className="link" href={`https://chzzk.naver.com/${s.chzzkChannelId}`} target="_blank" rel="noopener noreferrer">{s.chzzkName || s.chzzkChannelId}</a>
-                : <span className="tag tag-danger">미연동</span>}
-            </td>
-            <td className="muted small nowrap">{fmtTime(s.linkedAt)}</td>
-            {mod ? <td className="nowrap"><button className="btn btn-sm btn-danger-outline" type="button" onClick={() => remove(s)}>화이트리스트 해제</button></td> : null}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <SortTable rows={rows} rowKey={(s) => s.discordId} initial={{ key: 'linkedAt', dir: -1 }} columns={[
+      { key: 'discord', label: '디스코드', sort: (s) => s.discordName || s.discordId, render: (s) => (
+        <>
+          <div className="pname">
+            {s.discordName || s.discordId}
+            {online.has(s.steamId) ? <> <span className="tag tag-hs">접속 중</span></> : null}
+          </div>
+          {s.lastError ? <div className="small danger">{`예약 슬롯 등록 재시도 중: ${s.lastError}`}</div> : null}
+        </>
+      ) },
+      { key: 'steam', label: '스팀', sort: (s) => s.steamName, render: (s) => (
+        <>
+          <div>{s.steamName ?? '—'}</div>
+          <div className="mono muted small">{s.steamId}</div>
+        </>
+      ) },
+      { key: 'chzzk', label: '치지직', sort: (s) => s.chzzkName || s.chzzkChannelId, render: (s) => (s.chzzkChannelId
+        ? <a className="link" href={`https://chzzk.naver.com/${s.chzzkChannelId}`} target="_blank" rel="noopener noreferrer">{s.chzzkName || s.chzzkChannelId}</a>
+        : <span className="tag tag-danger">미연동</span>) },
+      { key: 'linkedAt', label: '인증 시각', desc: true, sort: (s) => s.linkedAt, className: 'muted small nowrap', render: (s) => fmtTime(s.linkedAt) },
+      ...(mod ? [{ key: 'actions', label: <span className="sr-only">작업</span>, className: 'actions', render: (s: Streamer) => (
+        <button className="btn btn-sm btn-danger-outline" type="button" onClick={() => remove(s)}>화이트리스트 해제</button>
+      ) }] : []),
+    ]} />
   );
 }
 
@@ -264,16 +253,9 @@ function WhitelistForm({ wl, onSaved }: { wl: Whitelist; onSaved: () => void }) 
           <button key={id} type="button" role="radio" aria-checked={mode === id} className={mode === id ? 'on' : ''} disabled={!editable} onClick={() => setMode(id)}>{label}</button>
         ))}
       </div>
-      <p className="muted small">{MODE_HELP[mode]}</p>
-      <label className="field">
-        <span className="field-label"><span>안내 문구 (킥·밴 사유로 플레이어에게 보임)</span><span>{`${charCount(message)}/200`}</span></span>
-        <textarea rows={3} maxLength={200} value={mode === 'off' ? wl.message : message} disabled={!messageEditable} onChange={(e) => setMessage(e.target.value)} />
-      </label>
-      {mode !== 'off' ? <p className="small">{`지금 접속 중인 미연동 플레이어: ${unlinkedOnline}명`}</p> : editable ? <p className="muted small">안내 문구는 킥·밴 모드를 고르면 바꿀 수 있습니다.</p> : null}
-      {editable
-        ? <div><button className="btn" type="submit" disabled={!dirty || (messageEditable && !message.trim())}>저장</button></div>
-        : <p className="muted small">변경은 관리자만 할 수 있습니다.</p>}
-      <p className="muted small">대시보드가 켜져 있을 때만 집행됩니다. RCON 제한에 의해 1회 요청마다 최대 3명씩 처리 가능합니다.</p>
+      <KickMessage label="안내 문구 (킥·밴 사유)" rows={3} value={mode === 'off' ? wl.message : message} disabled={!messageEditable} onChange={setMessage} />
+      {mode !== 'off' ? <p className="small">{`접속 중인 미연동 플레이어 ${unlinkedOnline}명`}</p> : null}
+      {editable ? <div><button className="btn" type="submit" disabled={!dirty || (messageEditable && !message.trim())}>저장</button></div> : null}
     </form>
   );
 }

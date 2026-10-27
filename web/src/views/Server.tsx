@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
-import { useStore, can } from '../lib/store.ts';
-import { api, run, errorMessage } from '../lib/api.ts';
+import { useStore, can, currentServer } from '../lib/store.ts';
+import { api, run, errorMessage, refreshMe } from '../lib/api.ts';
+import { modal, confirmAction } from '../lib/modal.tsx';
 import { toast } from '../lib/toast.ts';
 import { fmtAgo, fmtNum } from '../lib/format.ts';
 import { Card, Empty, useNow } from '../components/common.tsx';
@@ -40,6 +41,16 @@ export default function Server() {
     }
   };
 
+  const rotate = async () => {
+    if (!(await confirmAction('피드 토큰 재발급', '지금 토큰은 바로 쓸 수 없게 됩니다. 게임 서버 ini의 EventFeedEndpoints 토큰을 새 값으로 바꿀 때까지 킬피드가 끊깁니다.', { confirm: '재발급' }))) return;
+    try {
+      const { token } = await api<{ token: string }>('POST', '/api/feed-token/rotate', {});
+      await navigator.clipboard.writeText(token).catch(() => {});
+      toast('새 토큰을 발급해 클립보드에 복사했습니다');
+    } catch (err) {
+      toast(`재발급 실패: ${errorMessage(err)}`, 'error');
+    }
+  };
   const kv = (rows: KvRow[]) => (
     <dl className="kv card-body">
       {rows.map(([k, v, cls]) => [<dt key={`${k}-t`}>{k}</dt>, <dd key={`${k}-d`} className={cls}>{v}</dd>])}
@@ -49,48 +60,76 @@ export default function Server() {
   return (
     <div className="stack">
       <div className="grid-2">
-        <Card title="RCON 연결">
+        <Card title="RCON 상태">
           {kv([
             ['상태', live?.online ? '연결됨' : `끊김 ${live?.lastError ? `(${live.lastError.message})` : ''}`],
-            ['폴링 주기', live ? `${live.intervalMs / 1000}초 (보는 사람이 있으면 짧게, 빈 서버는 30초)` : '—'],
+            ['폴링 주기', live ? `${live.intervalMs / 1000}초` : '—'],
             ['마지막 폴링', fmtAgo(live?.lastPollAt)],
             ['게임 빌드', caps?.build ?? '—', 'mono'],
             ...(caps?.version?.project?.version ? [['게임 버전', `${caps.version.project.name ?? ''} ${caps.version.project.version}`.trim()] as KvRow] : []),
             ['API 버전', caps?.apiVersion ?? '—'],
             ['요청 한도', caps?.limits ? `분당 ${fmtNum(caps.limits.maxRequestsPerMinutePerIp)}회 · 본문 ${fmtNum(caps.limits.maxBodyBytes)}바이트` : '—'],
             ['설정 쓰기', caps?.config ? (caps.config.writable ? '가능' : '불가') : '—'],
-            ['접속 코드', live?.serverId || '없음 (호스트가 지정 안 함)', 'mono'],
+            live?.serverId ? ['접속 코드', live.serverId, 'mono'] : ['접속 코드', '없음', 'muted'],
           ])}
         </Card>
         <Card title="이벤트 피드 수신">
           {kv([
             ['마지막 배치', f?.lastBatchAt ? fmtAgo(f.lastBatchAt) : '받은 적 없음'],
-            ['받은 배치', `${fmtNum(f?.batches ?? 0)} (이번 실행 기준)`],
-            ['거부된 요청', `${fmtNum(f?.rejected ?? 0)}${f?.rejected ? ' · 토큰 불일치 확인' : ''}`],
+            ['받은 배치', fmtNum(f?.batches ?? 0)],
+            ['거부된 요청', fmtNum(f?.rejected ?? 0)],
             ['피드 서버 이름', f?.serverName ?? '—'],
             ['현재 매치 키', f?.matchKey ?? '—', 'mono small'],
             ['게임 서버 쪽 전송', gameFeedLabel(live?.gameFeed, caps), live?.gameFeed?.anyUnhealthy ? 'danger' : ''],
           ])}
         </Card>
       </div>
-      {can('admin') ? <RconCard /> : null}
+      {can('owner') ? <RconCard /> : null}
       {can('admin') && live?.gameFeed?.endpoints?.length ? <EndpointsCard endpoints={live.gameFeed.endpoints} /> : null}
       <SponsorCard />
       {can('admin') ? (
-        <Card title="피드 연결" extra={<IconButton icon={faCopy} label="토큰 포함 복사" onClick={copySnippet} />}>
+        <Card title="피드 연결" extra={
+          <span className="inline-field">
+            {can('owner') ? <button className="btn btn-sm" type="button" onClick={rotate}>토큰 재발급</button> : null}
+            <IconButton icon={faCopy} label="토큰 포함 복사" onClick={copySnippet} />
+          </span>
+        }>
           <div className="card-body stack">
             <p className="muted small">ServerSettings.ini에 <code>[/Script/WDRCON.WDRCONSettings]</code> 줄 바로 밑에 복붙한 후 재시작하세요.</p>
-            <p className="muted small">토큰과 서버 이름은 화면에 가려져 있어도 복사본에는 실제 값이 들어갑니다.</p>
             <pre className="code">{snippet('********', '********')}</pre>
           </div>
         </Card>
       ) : null}
-      <Card title="이 서버가 제공하는 경로" extra={<span className="muted small">{caps ? `${caps.routes.length}개` : ''}</span>}>
-        <div className="card-body">
-          {caps ? <ul className="route-list mono small">{caps.routes.map((r) => <li key={r}>{r}</li>)}</ul> : <Empty>아직 불러오지 못했습니다.</Empty>}
-        </div>
-      </Card>
+      {can('owner') ? <DeleteServerCard /> : null}
     </div>
+  );
+}
+
+function DeleteServerCard() {
+  const server = useStore(currentServer);
+  if (!server) return null;
+  const remove = async () => {
+    const v = await modal({
+      title: '서버 삭제',
+      body: <p>{`${server.name}의 킬 기록·감사 로그·신고·설정이 모두 지워지고 되돌릴 수 없습니다. 확인을 위해 서버 이름을 그대로 입력하세요.`}</p>,
+      fields: [{ name: 'confirm', label: '서버 이름', required: true, placeholder: server.name }],
+      confirm: '삭제',
+      danger: true,
+      hold: true,
+    });
+    if (!v) return;
+    if (await run('서버 삭제', 'DELETE', '/api/server', { confirm: v.confirm })) {
+      history.replaceState(null, '', location.pathname);
+      refreshMe();
+    }
+  };
+
+  return (
+    <Card title="위험 구역">
+      <div className="card-body">
+        <button className="btn btn-danger-outline" type="button" onClick={remove}>서버 삭제</button>
+      </div>
+    </Card>
   );
 }
 
@@ -139,9 +178,6 @@ function RconCard() {
             </div>
           </form>
         )}
-        <p className="muted small">
-          게임 서버 주소·RCON 포트와 비밀번호(게임 서버 ini의 Password). 저장하면 바로 다시 연결합니다. 비밀번호는 저장된 뒤 다시 볼 수 없습니다.
-        </p>
       </div>
     </Card>
   );
@@ -184,7 +220,6 @@ function SponsorCard() {
             <button className="btn" type="submit" disabled={!editable || url == null || draft.trim() === url}>{draft.trim() ? '저장' : '지우기'}</button>
           </form>
         ) : null}
-        <p className="muted small">게임 서버 목록에 보이는 배너입니다 (설정 문서의 ServerImageURL). 언제 반영되는지는 저장 후 알림에 표시됩니다.</p>
       </div>
     </Card>
   );
@@ -192,7 +227,7 @@ function SponsorCard() {
 
 function EndpointsCard({ endpoints }: { endpoints: FeedEndpoint[] }) {
   return (
-    <Card title="게임 서버 피드 엔드포인트" extra={<span className="muted small">게임 서버가 보고한 값 · 30초마다 갱신</span>}>
+    <Card title="게임 서버 피드 엔드포인트">
       <div className="card-body"><div className="table-wrap">
         <table className="table">
           <thead><tr><th>#</th><th>주소</th><th>상태</th><th className="num">대기</th><th className="num">전송 중</th><th className="num">연속 실패</th><th className="num">보냄</th><th className="num">유실</th><th>마지막 응답</th><th>마지막 성공</th></tr></thead>
@@ -214,7 +249,6 @@ function EndpointsCard({ endpoints }: { endpoints: FeedEndpoint[] }) {
           </tbody>
         </table>
       </div></div>
-      <p className="card-foot muted small">유실은 게임 서버가 보내지 못하고 버린 이벤트 수입니다. 피드는 재전송이 없어 그만큼 킬 기록이 빠집니다.</p>
     </Card>
   );
 }

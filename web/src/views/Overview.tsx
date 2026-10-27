@@ -38,7 +38,7 @@ export default function Overview() {
           <div className="card-body list-tight">
             {kills.length
               ? kills.slice(0, 12).map((k) => <KillRow key={k.eventId} k={k} compact now={now} />)
-              : <Empty>아직 받은 킬 이벤트가 없습니다. 연결 정보 탭에서 피드 설정을 확인하세요.</Empty>}
+              : <Empty>킬 이벤트가 없습니다.</Empty>}
           </div>
         </Card>
         <Card title="최근 교전" extra={<a href="#feed" className="link">전체 보기</a>}>
@@ -48,7 +48,7 @@ export default function Overview() {
         </Card>
       </div>
       <div className="grid-2">
-        <Card title="이상 징후 힌트" extra={<span className="muted small">판정 아님, 확인용</span>}>
+        <Card title="이상 징후">
           <div className="card-body"><Hints live={live} /></div>
         </Card>
         {can('mod') ? <BroadcastCard /> : null}
@@ -62,15 +62,15 @@ function Banners({ live }: { live: Live | null }) {
   if (!live) items.push(['info', '서버 상태를 불러오는 중입니다.']);
   else {
     if (!live.online) items.push(['error', `RCON에 연결할 수 없습니다: ${live.lastError?.message ?? '알 수 없는 오류'}`]);
-    if (live.mapTransition) items.push(['warn', '맵 전환 중입니다. 약 40초간 팀 정보가 비고 인원이 0으로 보일 수 있습니다. 전원 퇴장이 아닙니다.']);
-    if (live.restart?.due) items.push(['warn', `가동 ${fmtDuration(live.restart.uptimeSeconds)}: 게임 자체 24시간 재시작이 이번 라운드가 끝나면 실행됩니다.`]);
-    if (live.cashUnreliable) items.push(['info', '이 호스트는 모든 플레이어의 돈을 0으로 보고합니다.']);
+    if (live.mapTransition) items.push(['warn', '맵 전환 중: 약 40초간 인원·팀 정보가 비어 보입니다.']);
+    if (live.restart?.due) items.push(['warn', `가동 ${fmtDuration(live.restart.uptimeSeconds)}: 이번 라운드 후 24시간 자동 재시작`]);
+    if (live.cashUnreliable) items.push(['info', '이 호스트는 돈을 0으로 보고합니다.']);
     const f = live.feed;
     const playing = (live.status?.players?.current ?? 0) > 0;
     if (playing && !live.mapTransition && (!f?.lastBatchAt || Date.now() - f.lastBatchAt > FEED_SILENT_MS)) {
       items.push(['warn', f?.lastBatchAt
-        ? `이벤트 피드가 ${fmtAgo(f.lastBatchAt)} 이후 조용합니다. 피드는 재전송이 없어 그동안의 킬은 유실됩니다.`
-        : '이벤트 피드를 받은 적이 없습니다. 킬피드·교전·헤드샷률은 피드가 있어야 동작합니다.']);
+        ? `이벤트 피드 끊김 · ${fmtAgo(f.lastBatchAt)}`
+        : '이벤트 피드를 받은 적이 없습니다.']);
     }
   }
   return (
@@ -97,11 +97,11 @@ function ServerLine({ live }: { live: Live | null }) {
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
+function Stat({ label, value, sub, flash }: { label: string; value: ReactNode; sub?: ReactNode; flash?: string | number | null }) {
   return (
     <div className="stat">
       <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
+      <div key={flash ?? undefined} className={flash != null ? 'stat-value stat-flash' : 'stat-value'}>{value}</div>
       {sub ? <div className="stat-sub">{sub}</div> : null}
     </div>
   );
@@ -114,15 +114,14 @@ function Stats({ live }: { live: Live | null }) {
   const modes = (s?.experiences || []).map(modeLabel).join(' · ');
   return (
     <div className="stat-grid">
-      <Stat label="맵" value={s?.map ? <span className="inline-row"><MapArt map={s.map} lighting={s.lighting} variant="square" />{s.map}</span> : '—'}
+      <Stat label="맵" flash={s?.map} value={s?.map ? <span className="inline-row"><MapArt map={s.map} lighting={s.lighting} variant="square" />{s.map}</span> : '—'}
         sub={s ? [modes || '모드 정보 없음', s.lighting, s.alternator && s.alternator !== 'None' ? `존 ${s.alternator}` : null].filter(Boolean).join(' · ') : null} />
-      <Stat label="인원" value={s ? `${s.players.current} / ${s.players.max}` : '—'} sub={s ? '공개 슬롯 기준 (예약 슬롯 제외)' : null} />
-      <Stat label="다음 맵" value={live?.nextMap ? <span className="inline-row"><MapArt map={live.nextMap.map} lighting={live.nextMap.lighting} variant="square" />{live.nextMap.map}</span> : '—'}
-        sub={live?.rotationEnabled === false ? '로테이션 꺼짐: 매치가 끝나면 지금 맵을 다시 불러옵니다' : live?.nextMap ? [live.nextMap.experiences.map(modeLabel).join(' · '), live.nextMap.lighting].filter(Boolean).join(' · ') || null : null} />
-      <Stat label="매치 시계" value={fmtClock(m?.matchSeconds)}
-        sub={m?.matchSecondsSource === 'feed' ? '킬피드 기준 (서버가 시계를 안 보냄)' : m?.matchSecondsSource ? null : '서버·피드 모두 시계 없음'} />
-      <Stat label="매치 상태" value={feedState ? STATE_LABELS[feedState] ?? feedState : '—'}
-        sub={feedState ? `피드 · ${fmtAgo(live?.feed.matchState?.at)}` : 'Season 2 피드 이벤트로만 확인 가능'} />
+      <Stat label="인원" flash={s?.players.current} value={s ? `${s.players.current} / ${s.players.max}` : '—'} />
+      <Stat label="다음 맵" flash={live?.nextMap?.map} value={live?.nextMap ? <span className="inline-row"><MapArt map={live.nextMap.map} lighting={live.nextMap.lighting} variant="square" />{live.nextMap.map}</span> : '—'}
+        sub={live?.rotationEnabled === false ? '로테이션 꺼짐' : live?.nextMap ? [live.nextMap.experiences.map(modeLabel).join(' · '), live.nextMap.lighting].filter(Boolean).join(' · ') || null : null} />
+      <Stat label="매치 시계" value={fmtClock(m?.matchSeconds)} />
+      <Stat label="매치 상태" flash={feedState} value={feedState ? STATE_LABELS[feedState] ?? feedState : '—'}
+        sub={feedState ? fmtAgo(live?.feed.matchState?.at) : null} />
       <Stat label="가동 시간" value={live?.restart ? fmtDuration(live.restart.uptimeSeconds) : '—'}
         sub={live?.health ? `작업 큐 ${live.health.gameThreadQueue?.depth ?? 0} · 거부 ${live.health.gameThreadQueue?.rejectedTotal ?? 0}` : null} />
     </div>
@@ -135,7 +134,7 @@ function Scores({ live }: { live: Live | null }) {
   const rows = live?.status?.factionScores || [];
   return (
     <Card title="진영별 점수"
-      extra={cap ? <span className="muted small">{`목표 ${cap}점${m?.scoreCapAssumed ? ' (서버가 상한을 안 보내 KOTH 기본값)' : ''}`}</span> : null}>
+      extra={cap ? <span className="muted small">{`목표 ${cap}점`}</span> : null}>
       <div className="card-body">
         {rows.length ? rows.map((f) => <ScoreRow key={f.name} name={f.name} color={f.colorHex} score={f.score} cap={cap} />) : <Empty>점수 정보 없음</Empty>}
       </div>
@@ -178,14 +177,9 @@ function Hints({ live }: { live: Live | null }) {
     if ((r.maxDistance ?? 0) >= LONG_KILL_M) hints.push({ who, text: `최장 킬 ${fmtDist(r.maxDistance)}` });
     if (r.teamkills >= 3) hints.push({ who, text: `팀킬 추정 ${r.teamkills}회` });
   }
-  return (
-    <>
-      {hints.length
-        ? <ul className="hint-list">{hints.map((x, i) => <li key={i}><strong>{x.who}</strong> {x.text}</li>)}</ul>
-        : <Empty>이번 매치에서 눈에 띄는 수치가 없습니다.</Empty>}
-      <p className="muted small">{`기준: ${HS_FLAG_MIN_KILLS}킬 이상에서 헤드샷 ${HS_FLAG_PCT}% 이상, ${LONG_KILL_M}m 이상 킬, 팀킬 3회 이상. 팀킬은 폴링 진영으로 추정한 값입니다.`}</p>
-    </>
-  );
+  return hints.length
+    ? <ul className="hint-list">{hints.map((x, i) => <li key={i}><strong>{x.who}</strong> {x.text}</li>)}</ul>
+    : <Empty>눈에 띄는 수치가 없습니다.</Empty>;
 }
 
 function BroadcastCard() {
@@ -200,7 +194,7 @@ function BroadcastCard() {
     if (r) setText('');
   };
   return (
-    <Card title="전체 공지" extra={<span className="muted small">게임 제한 256자</span>}>
+    <Card title="전체 공지">
       <form className="card-body stack" onSubmit={onSubmit}>
         <textarea rows={3} maxLength={256} placeholder="모든 플레이어에게 보낼 공지" aria-label="전체 공지 내용" value={text} onChange={(e) => setText(e.target.value)} />
         <div className="row-between">

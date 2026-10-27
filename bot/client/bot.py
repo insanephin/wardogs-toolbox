@@ -2,7 +2,7 @@ import os, logging
 from discord import Intents, Activity, ActivityType, Object
 from discord.ext import commands
 from configparser import ConfigParser
-from utils.view import PanelView
+from utils.view import StreamerButton
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class Bot(commands.Bot):
         except Exception:
             logger.error("Failed to load extensions", exc_info=True)
 
-        self.add_view(PanelView())
+        self.add_dynamic_items(StreamerButton)
 
         guild_id = config['bot'].get('guild_id')
         if guild_id:

@@ -1,10 +1,12 @@
 import { useSyncExternalStore } from 'react';
 import type { Action, CashHistory, Capabilities, Engagement, FeedEvent, Kill, Live, Me, Report, Role } from './types.ts';
 
-const ROLE_RANK: Record<Role, number> = { viewer: 1, mod: 2, admin: 3 };
+const ROLE_RANK: Record<Role, number> = { viewer: 1, mod: 2, admin: 3, owner: 4 };
+const SERVER_KEY = 'wd_server';
 
 interface State {
   me: Me | null;
+  serverId: number | null;
   live: Live | null;
   caps: Capabilities | null;
   colors: Record<string, string | undefined>;
@@ -19,6 +21,7 @@ interface State {
 
 let state: State = {
   me: null,
+  serverId: null,
   live: null,
   caps: null,
   colors: {},
@@ -48,8 +51,31 @@ export function useStore<T>(selector: (s: State) => T): T {
   return useSyncExternalStore(subscribe, () => selector(state));
 }
 
-export function can(role: Role, me = state.me): boolean {
-  return !!me && ROLE_RANK[me.role] >= ROLE_RANK[role];
+export const currentServer = (s: State = state) => s.me?.servers.find((x) => x.id === s.serverId) ?? null;
+
+export function can(role: Role, s: State = state): boolean {
+  const r = currentServer(s)?.role;
+  return !!r && ROLE_RANK[r] >= ROLE_RANK[role];
+}
+
+export function pickServer(me: Me, wanted?: number | null): number | null {
+  let saved: number | null = null;
+  try {
+    saved = Number(localStorage.getItem(SERVER_KEY)) || null;
+  } catch {}
+  const ids = me.servers.map((s) => s.id);
+  return [wanted, saved, ids[0]].find((id): id is number => id != null && ids.includes(id)) ?? null;
+}
+
+export function rememberServer(id: number): void {
+  try {
+    localStorage.setItem(SERVER_KEY, String(id));
+  } catch {}
+}
+
+export function selectServer(id: number): void {
+  rememberServer(id);
+  setState({ serverId: id });
 }
 
 export function serves(caps: Capabilities | null, route: string): boolean {
