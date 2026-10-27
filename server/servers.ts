@@ -20,7 +20,8 @@ interface ServersContext {
   configured: Record<Provider, boolean>;
 }
 
-export function roleOf(store: Store, session: Session, serverId: number): Role | null {
+export function roleOf(store: Store, session: Session, serverId: number, fleet: Fleet): Role | null {
+  if (session.guest) return fleet.get(serverId)?.demo ? 'owner' : null;
   return session.superadmin ? 'owner' : store.memberRole(serverId, session.steamId);
 }
 
@@ -38,6 +39,7 @@ export function registerServers(router: Router, { store, fleet, hub, steam, conf
   });
 
   const myServers = (session: Session) => {
+    if (session.guest) return fleet.all().filter((s) => s.demo).map((s) => summary(s, 'owner'));
     if (session.superadmin) return fleet.all().map((s) => summary(s, 'owner'));
     return store.memberships(session.steamId).flatMap(({ serverId, role }) => {
       const srv = fleet.get(serverId);
@@ -50,7 +52,7 @@ export function registerServers(router: Router, { store, fleet, hub, steam, conf
 
   router.add('GET', '/api/me', {}, ({ session }) => {
     const user = store.user(session.steamId);
-    return { steamId: session.steamId, name: session.name, avatar: user?.avatar ?? null, superadmin: session.superadmin, servers: myServers(session) };
+    return { steamId: session.steamId, name: session.name, avatar: user?.avatar ?? null, superadmin: session.superadmin, demo: !!session.guest, servers: myServers(session) };
   });
 
   router.add('GET', '/api/servers', {}, ({ session }) => myServers(session));

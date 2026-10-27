@@ -19,6 +19,7 @@ export interface Me {
   name: string;
   avatar: string | null;
   superadmin: boolean;
+  demo?: boolean;
   servers: ServerSummary[];
 }
 

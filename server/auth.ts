@@ -12,6 +12,7 @@ export interface Session {
   steamId: string;
   name: string;
   superadmin: boolean;
+  guest?: boolean;
   expires: number;
 }
 
@@ -34,11 +35,11 @@ export class Auth {
     this.superadmins = parseSuperadmins(superadminSpec);
   }
 
-  login(steamId: string, name: string): string {
+  login(steamId: string, name: string, guest = false): string {
     const now = Date.now();
     for (const [k, s] of this.sessions) if (s.expires < now) this.sessions.delete(k);
     const id = randomBytes(32).toString('base64url');
-    this.sessions.set(id, { steamId, name: name || steamId, superadmin: this.superadmins.has(steamId), expires: now + SESSION_TTL_MS });
+    this.sessions.set(id, { steamId, name: name || steamId, superadmin: !guest && this.superadmins.has(steamId), ...(guest && { guest }), expires: now + SESSION_TTL_MS });
     return id;
   }
 

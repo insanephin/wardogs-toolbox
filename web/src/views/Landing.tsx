@@ -36,7 +36,10 @@ export default function Landing() {
           <RotatingText items={FEATURES} />
           <span className="sr-only">{FEATURES.join(', ')}</span>
         </p>
-        <a className="btn btn-primary btn-lg" href="/panel">대시보드로 가기</a>
+        <div className="landing-actions">
+          <a className="btn btn-primary btn-lg" href="/panel">대시보드로 가기</a>
+          <a className="btn btn-lg" href="/panel/demo">데모 서버</a>
+        </div>
       </main>
       <PublicFooter />
     </div>

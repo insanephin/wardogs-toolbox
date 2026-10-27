@@ -213,6 +213,7 @@ main:focus, main:focus-visible { outline: none; }
 .banner-warn { --c: var(--warn); }
 .banner-error { --c: var(--danger); }
 .banner-ok { --c: var(--ok); }
+.demo-banner { padding: 8px 16px; font-size: var(--fs-sm); color: var(--accent-ink); background: var(--warn); text-align: center; }
 
 .chip { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-sm); }
 .chip::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
@@ -403,6 +404,7 @@ textarea { resize: vertical; width: 100%; }
 .landing main p { margin: 0; }
 .landing a.btn { text-decoration: none; }
 .landing-tagline { min-height: 1.6em; }
+.landing-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .rotating { display: inline-block; overflow: hidden; font-size: var(--fs-md); }
 .rotating > span { display: inline-block; animation: rotate-line linear both; }
 @keyframes rotate-line {
@@ -506,4 +508,29 @@ textarea { resize: vertical; width: 100%; }
   .page-body, .server-menu, .list-tight > .kill, .overlay, .overlay > .modal, .toast, .stat-flash { animation: none; }
   .btn:active:not(:disabled) { transform: none; }
   .rotating > span { animation-name: rotate-fade; }
+}
+
+/* Desktop: the app is one viewport tall. Table pages (.main-fill) fit it and scroll only inside the table;
+   other pages scroll inside .app-main so the sidebar and page head stay put. */
+@media (min-width: 901px) {
+  .app { height: 100vh; height: 100dvh; }
+  .app-main { min-height: 0; overflow-y: auto; }
+  .main-fill { flex: 1 1 0; min-height: 0; padding-bottom: 24px; }
+  .main-fill > .page-body { flex: 1; min-height: 0; }
+  .main-fill > .page-body > .card, .main-fill > .page-body > .grid-main { flex: 1; min-height: 0; }
+  .main-fill .card:has(.table-wrap) { display: flex; flex-direction: column; }
+  .main-fill > .page-body > .card > .card-body,
+  .main-fill .grid-main > .card > .card-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .main-fill > .page-body > .card > .card-body > .table-wrap,
+  .main-fill .grid-main > .card > .card-body > .table-wrap { flex: 1; min-height: 0; overflow: auto; }
+  .main-fill .table-wrap thead th { position: sticky; top: 0; z-index: 1; background: var(--panel); }
+  .main-fill .grid-main { grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+  .main-fill .grid-main > .stack { min-height: 0; overflow-y: auto; }
+}
+/* grid-main collapses to one column here, so split pages go back to normal scrolling. */
+@media (min-width: 901px) and (max-width: 1200px) {
+  .main-fill-split { flex: 0 0 auto; }
+  .main-fill-split .grid-main { grid-template-rows: none; }
+  .main-fill-split .grid-main > .stack { overflow: visible; }
+  .main-fill-split .table-wrap { overflow-x: auto; overflow-y: visible; }
 }

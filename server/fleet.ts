@@ -17,6 +17,7 @@ export interface ServerRuntime {
   name: string;
   feedToken: string;
   readonly public: boolean;
+  demo: boolean;
   joinCode: string | null;
   store: ServerStore;
   rcon: RconClient;
@@ -33,9 +34,10 @@ interface FleetOptions {
   weapons: WeaponNames;
   gapSec: number;
   minKills: number;
+  demoRcon?: (row: ServerRow) => RconClient | null;
 }
 
-export function createFleet({ store, hub, steam, weapons, gapSec, minKills }: FleetOptions) {
+export function createFleet({ store, hub, steam, weapons, gapSec, minKills, demoRcon }: FleetOptions) {
   const runtimes = new Map<number, ServerRuntime>();
   let running = false;
 
@@ -57,7 +59,8 @@ export function createFleet({ store, hub, steam, weapons, gapSec, minKills }: Fl
   function spawn(row: ServerRow): ServerRuntime {
     const scoped = store.forServer(row.id);
     const emit: Emit = (event, data) => hub.broadcast(row.id, event, data);
-    const rcon = new RconClient({ baseUrl: row.rconUrl, password: row.rconPassword });
+    const fake = demoRcon?.(row) ?? null;
+    const rcon = fake ?? new RconClient({ baseUrl: row.rconUrl, password: row.rconPassword });
     let poller: Poller;
     const feed = new FeedProcessor({
       store: scoped,
@@ -71,7 +74,8 @@ export function createFleet({ store, hub, steam, weapons, gapSec, minKills }: Fl
     poller = new Poller({ rcon, store: scoped, feed, emit, watchers: () => hub.watching(row.id), steam, onServerId: (code) => remember(rt, code), onServerName: (name) => rename(rt, name) });
     const rt: ServerRuntime = {
       id: row.id, name: row.name, feedToken: row.feedToken, joinCode: row.joinCode,
-      get public() { return poller.passworded === false; },
+      demo: !!fake,
+      get public() { return !fake && poller.passworded === false; },
       store: scoped, rcon, feed, poller, emit, catalog: { at: 0, data: null },
     };
     runtimes.set(row.id, rt);

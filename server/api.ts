@@ -12,6 +12,7 @@ import type { Discord } from './discord.ts';
 import type { SteamProfiles } from './steam.ts';
 import type { Fleet, ServerRuntime } from './fleet.ts';
 import { probeRcon, throttleProbe, requireRconUrl } from './target.ts';
+import { isDemoSteamId, demoProfiles } from './demo.ts';
 import { SETTING_FIELDS, readSettings, writeSettings, lockedSettings, appliesSettings, presetValues } from './settings.ts';
 import type { IncomingMessage } from 'node:http';
 
@@ -80,10 +81,10 @@ export function registerApi(router: Router, ctx: ApiContext): void {
   });
   route('GET', '/api/match-events', 'viewer', ({ srv }) => srv.store.recentMatchEvents(100));
   route('GET', '/api/cash-history', 'viewer', ({ srv }) => srv.poller.cash);
-  route('GET', '/api/steam/profiles', 'viewer', ({ query }) => {
+  route('GET', '/api/steam/profiles', 'viewer', ({ query, srv }) => {
     const ids = [...new Set((query.get('ids') || '').split(',').map((s) => s.trim()).filter(Boolean))];
     if (ids.length > 200 || !ids.every((id) => STEAM_ID.test(id))) throw new HttpError(400, 'bad_steam_id', 'SteamID64 목록이 올바르지 않습니다 (최대 200개)');
-    return steam.lookup(ids);
+    return srv.demo ? demoProfiles(ids) : steam.lookup(ids);
   });
   route('GET', '/api/players/:steamId/profile', 'viewer', ({ params, srv }) => srv.store.playerProfile(requireSteamId(params.steamId)));
 
@@ -162,7 +163,8 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     return act(srv, session, 'ban_queue_remove', id, null, async () => ({ removed: srv.store.removePendingBan(id) }));
   });
 
-  route('GET', '/api/links', 'viewer', ({ srv }) => srv.store.links());
+  // Links are global; keep the demo server's fake links and real players' links apart.
+  route('GET', '/api/links', 'viewer', ({ srv }) => srv.store.links().filter((l) => isDemoSteamId(l.steamId) === srv.demo));
 
   route('DELETE', '/api/links/:steamId', 'mod', ({ params, session, srv }) => {
     if (!session.superadmin) throw new HttpError(403, 'forbidden', '계정 연동 해제는 전체 관리자만 할 수 있습니다');

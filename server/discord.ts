@@ -243,7 +243,7 @@ export function createDiscord({ config, store, fleet, superadmins }: DiscordOpti
       const steamId = store.identityOwner('discord', discordId);
       if (!steamId) return { linked: false, servers: [] };
       const servers = superadmins.has(steamId)
-        ? fleet.all()
+        ? fleet.all().filter((s) => !s.demo)
         : store.memberships(steamId).filter((m) => hasRole(m.role, 'admin')).flatMap((m) => fleet.get(m.serverId) ?? []);
       return { linked: true, servers: servers.map((s) => ({ id: s.id, name: s.name })) };
     }));

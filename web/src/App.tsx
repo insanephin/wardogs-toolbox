@@ -40,24 +40,26 @@ interface Page {
   View?: ComponentType;
   tabs?: Page[];
   hidden?: boolean;
+  // Fit the viewport and scroll only inside the table. 'split' = grid-main layout with a side column.
+  fill?: 'card' | 'split';
 }
 
 const VIEWS: Page[] = [
   { id: 'overview', label: '개요', icon: faGauge, View: Overview, role: 'viewer' },
-  { id: 'players', label: '플레이어', icon: faUsers, View: Players, role: 'viewer' },
-  { id: 'feed', label: '전투 기록', icon: faCrosshairs, View: Feed, role: 'viewer' },
+  { id: 'players', label: '플레이어', icon: faUsers, View: Players, role: 'viewer', fill: 'card' },
+  { id: 'feed', label: '전투 기록', icon: faCrosshairs, View: Feed, role: 'viewer', fill: 'split' },
   { id: 'match', label: '경기 운영', icon: faMap, View: Match, role: 'viewer' },
   { id: 'access', label: '접속 관리', role: 'viewer', tabs: [
-    { id: 'links', label: '계정 연동·화이트리스트', icon: faLink, View: Links, role: 'viewer' },
-    { id: 'moderation', label: '밴·예약 슬롯', icon: faBan, View: Moderation, role: 'viewer' },
+    { id: 'links', label: '계정 연동·화이트리스트', icon: faLink, View: Links, role: 'viewer', fill: 'split' },
+    { id: 'moderation', label: '밴·예약 슬롯', icon: faBan, View: Moderation, role: 'viewer', fill: 'split' },
   ] },
-  { id: 'reports', label: '신고', icon: faFlag, View: Reports, role: 'viewer' },
+  { id: 'reports', label: '신고', icon: faFlag, View: Reports, role: 'viewer', fill: 'card' },
   { id: 'system', label: '설정', role: 'viewer', tabs: [
     { id: 'server', label: '연결 정보', icon: faPlug, View: Server, role: 'viewer' },
     { id: 'settings', label: '간편 설정', icon: faSliders, View: Settings, role: 'admin' },
     { id: 'config', label: '설정 문서', icon: faFileCode, View: Config, role: 'admin' },
-    { id: 'audit', label: '감사 로그', icon: faClockRotateLeft, View: Audit, role: 'admin' },
-    { id: 'members', label: '관리자', icon: faUserShield, View: Members, role: 'admin' },
+    { id: 'audit', label: '감사 로그', icon: faClockRotateLeft, View: Audit, role: 'admin', fill: 'card' },
+    { id: 'members', label: '관리자', icon: faUserShield, View: Members, role: 'admin', fill: 'card' },
   ] },
   { id: 'account', label: '내 계정', View: Account, role: 'viewer', hidden: true },
 ];
@@ -178,7 +180,7 @@ function MeBox({ me, role, active }: { me: Me; role: Role | null; active?: boole
           <Avatar src={me.avatar} /><span className="me-name">{me.name}</span>
         </a>
       ) : <span className="me-link"><Avatar src={me.avatar} /><span className="me-name">{me.name}</span></span>}
-      <IconButton icon={faRightFromBracket} label="로그아웃" className="btn-ghost" onClick={logout} />
+      <IconButton icon={faRightFromBracket} label={me.demo ? '데모 나가기' : '로그아웃'} className="btn-ghost" onClick={logout} />
     </div>
   );
 }
@@ -242,6 +244,7 @@ function Shell({ me }: { me: Me }) {
 
   useEffect(() => {
     mainRef.current?.focus({ preventScroll: true });
+    mainRef.current?.parentElement?.scrollTo(0, 0);
   }, [page.id]);
 
   const navItem = (v: Page) => (
@@ -266,6 +269,7 @@ function Shell({ me }: { me: Me }) {
         <div className="side-foot"><MeBox me={me} role={role} active={page.id === 'account'} /></div>
       </aside>
       <div className={stale ? 'app-main is-stale' : 'app-main'}>
+        {me.demo ? <div className="demo-banner" role="note">데모 체험 중입니다. 가상의 게임 서버라 버튼을 눌러도 실제 서버에는 영향이 없고, 6시간마다 처음 상태로 돌아갑니다.</div> : null}
         <header className="page-head">
           <h1>{page.label}</h1>
           <div className="page-head-right">
@@ -273,7 +277,7 @@ function Shell({ me }: { me: Me }) {
             <Conn />
           </div>
         </header>
-        <main id="main" tabIndex={-1} ref={mainRef}>
+        <main id="main" tabIndex={-1} ref={mainRef} className={page.fill ? `main-fill main-fill-${page.fill}` : undefined}>
           {page.View ? <div key={page.id} className="page-body"><page.View /></div> : null}
         </main>
       </div>
@@ -344,13 +348,17 @@ function ServerPicker({ me }: { me: Me }) {
               </span>
             </button>
           ))}
-          <div className="server-menu-sep" aria-hidden="true" />
-          <button type="button" className="server-item server-add" onClick={() => {
-            setOpen(false);
-            openCreateServer();
-          }}>
-            <Icon icon={faPlus} fixedWidth />새 서버 추가
-          </button>
+          {me.demo ? null : (
+            <>
+              <div className="server-menu-sep" aria-hidden="true" />
+              <button type="button" className="server-item server-add" onClick={() => {
+                setOpen(false);
+                openCreateServer();
+              }}>
+                <Icon icon={faPlus} fixedWidth />새 서버 추가
+              </button>
+            </>
+          )}
         </div>
       ) : null}
     </div>

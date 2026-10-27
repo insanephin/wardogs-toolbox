@@ -21,6 +21,7 @@ import { createMapArt } from './mapart.ts';
 import { createFleet } from './fleet.ts';
 import type { ServerRuntime } from './fleet.ts';
 import { registerServers, roleOf } from './servers.ts';
+import { createDemo, GUEST_STEAM_ID, GUEST_NAME } from './demo.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wd_session';
@@ -31,6 +32,9 @@ const PUBLIC_PAGES = new Set(['/', '/report']);
 const RESERVED = new Set(['panel', 'rcon', 'report', 'assets', 'api', 'auth', 'callback', 'discord', 'terms', 'privacy']);
 const POLICY_URL = 'https://insanephin.xyz/projects/wardogs-rcon';
 const POLICY_PAGES = new Set(['/terms', '/privacy']);
+// Guests may only read their own session info and use the demo server, minus settings that reach beyond it.
+const GUEST_GLOBAL = /^\/api\/(me|servers|account|map-art)$/;
+const GUEST_BLOCKED = /^\/api\/s\/\d+\/(server|members\/[^/]+|rcon|feed-token(\/rotate)?|links\/[^/]+)$/;
 
 function notFound(url: URL, res: ServerResponse) {
   if (/^\/(rcon\/)?assets\//.test(url.pathname)) {
@@ -46,11 +50,13 @@ function createApp(config: Config) {
   const store = new Store(config.dbPath, { legacyFeedToken: config.feedToken, legacyDiscordServerId: config.discord.legacyServerId });
   const hub = new SseHub();
   const steam = createSteamProfiles(config.steam.apiKey);
+  const weapons = loadWeaponNames(join(ROOT, 'data/weapons.json'));
+  const demo = createDemo(store, weapons);
   const fleet = createFleet({
-    store, hub, steam,
-    weapons: loadWeaponNames(join(ROOT, 'data/weapons.json')),
+    store, hub, steam, weapons,
     gapSec: config.engagementGapSec,
     minKills: config.engagementMinKills,
+    demoRcon: demo.rcon,
   });
   fleet.load();
 
@@ -91,6 +97,7 @@ function createApp(config: Config) {
     identity: (provider, account, panelSid) => {
       const s = auth.session(panelSid);
       if (!s) return 'expired';
+      if (s.guest) return 'failed';
       if (provider === 'steam') return 'failed';
       if (!store.linkIdentity(s.steamId, provider, account.id, account.name)) return 'taken';
       console.log(`[관리자] ${s.name}(${s.steamId})에 ${provider} ${account.name} 연결`);
@@ -103,7 +110,7 @@ function createApp(config: Config) {
       endPanelSession(previous);
       return cookie('', 0);
     },
-  }, () => fleet.all().map((s) => ({ id: s.id, name: s.name, joinCode: s.joinCode, public: s.public })), discord);
+  }, () => fleet.all().filter((s) => !s.demo).map((s) => ({ id: s.id, name: s.name, joinCode: s.joinCode, public: s.public })), discord);
   linking.register(router);
   registerReports(router, { store, fleet, configured: linking.configured, accounts: linking.accounts });
   registerServers(router, { store, fleet, hub, steam, configured: linking.configured });
@@ -137,10 +144,15 @@ function createApp(config: Config) {
     let role: Role | null = null;
     if (!route.opts.public) {
       if (!session) throw new HttpError(401, 'unauthenticated', '로그인이 필요합니다');
+      if (session.guest && (params.sid === undefined
+        ? req.method !== 'GET' || !GUEST_GLOBAL.test(url.pathname)
+        : req.method !== 'GET' && GUEST_BLOCKED.test(url.pathname))) {
+        throw new HttpError(403, 'demo_forbidden', '데모 체험에서는 쓸 수 없는 기능입니다');
+      }
       if (route.opts.superadmin && !session.superadmin) throw new HttpError(403, 'forbidden', '전체 관리자만 할 수 있습니다');
       if (params.sid !== undefined) {
         srv = fleet.get(Number(params.sid));
-        role = srv && roleOf(store, session, srv.id);
+        role = srv && roleOf(store, session, srv.id, fleet);
         if (!srv || !role) throw new HttpError(404, 'no_server', '서버가 없거나 권한이 없습니다');
         const needed = route.opts.role ?? 'admin';
         if (!hasRole(role, needed)) throw new HttpError(403, 'forbidden', `이 작업은 ${needed} 이상 권한이 필요합니다`);
@@ -166,6 +178,13 @@ function createApp(config: Config) {
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? '/', 'http://localhost');
+    if (url.pathname === '/panel/demo' && req.method === 'GET') {
+      if (!adminAllowed(req)) return notFound(url, res);
+      endPanelSession(parseCookies(req.headers.cookie)[COOKIE]);
+      const sid = auth.login(GUEST_STEAM_ID, GUEST_NAME, true);
+      res.writeHead(302, { Location: '/panel', 'Set-Cookie': cookie(sid, 12 * 3600), 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
+      return res.end();
+    }
     if (await linking.handle(url, req, res)) return;
     if (url.pathname.startsWith('/api/')) return handleApi(req, res, url);
     if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: { code: 'method_not_allowed' } });
@@ -211,13 +230,13 @@ function createApp(config: Config) {
 
   const server = createServer((req, res) => handle(req, res).catch(onError(res)));
 
-  return { server, auth, fleet, discord, linking };
+  return { server, auth, fleet, discord, linking, demo };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = loadConfig();
   const app = createApp(config);
-  const servers = app.fleet.all();
+  const servers = app.fleet.all().filter((s) => !s.demo);
   console.log(`게임 서버 ${servers.length}개: ${servers.map((s) => `#${s.id} ${s.name}`).join(', ') || '없음'}`);
   for (const s of servers) if (!s.rcon.baseUrl || !s.rcon.password) console.warn(`[경고] 서버 #${s.id} ${s.name}: RCON 연결 정보가 없습니다.`);
   if (!app.auth.superadmins.size) console.warn('[경고] SUPERADMIN_STEAM_IDS가 비어 있어 서버를 추가하거나 기존 서버를 관리할 사람이 없습니다.');
@@ -232,6 +251,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
   if (config.adminAllowIps.length) console.log(`관리자 허용 IP: ${config.adminAllowIps.join(', ')}`);
   app.fleet.start();
+  app.demo.start(app.fleet);
   app.discord.start();
   const shutdown = () => {
     app.fleet.stop();
