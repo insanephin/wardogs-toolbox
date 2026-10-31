@@ -10,8 +10,10 @@ import { Spinner } from '../components/spinner.tsx';
 import { SortTable } from '../components/sortTable.tsx';
 import type { Member, Role } from '../lib/types.ts';
 import { ROLE_LABEL } from '../lib/labels.ts';
+import { PlayerName } from '../components/playerName.tsx';
 
 const ROLES: Role[] = ['viewer', 'mod', 'admin', 'owner'];
+const ASSIGNABLE: Role[] = ['viewer', 'mod', 'admin'];
 
 export default function Members() {
   const me = useStore((s) => s.me);
@@ -60,7 +62,7 @@ export default function Members() {
             <input aria-label="추가할 SteamID64" inputMode="numeric" placeholder="SteamID64 (17자리)" maxLength={17} value={steamId}
               onChange={(e) => setSteamId(e.target.value.replace(/\D/g, ''))} />
             <select aria-label="권한" value={role} onChange={(e) => setRole(e.target.value as Role)}>
-              {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+              {ASSIGNABLE.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
             </select>
             <button className="btn" type="submit" disabled={!STEAM_ID.test(steamId.trim())}>추가</button>
           </form>
@@ -69,21 +71,18 @@ export default function Members() {
           <div className="table-wrap">
             <SortTable rows={list} rowKey={(m) => m.steamId} initial={{ key: 'role', dir: -1 }} columns={[
               { key: 'name', label: '스팀', sort: (m) => m.name, render: (m) => (
-                <>
-                  <div className="pname"><Avatar src={m.avatar} />{m.name ?? '이름 모름'}</div>
-                  <div className="mono muted small">{m.steamId}</div>
-                </>
+                <div className="who"><Avatar src={m.avatar} /><div><div><PlayerName className="pname" steamId={m.steamId} name={m.name}>{m.name ?? '이름 모름'}</PlayerName></div><div className="mono muted small">{m.steamId}</div></div></div>
               ) },
-              { key: 'role', label: '권한', desc: true, sort: (m) => ROLES.indexOf(m.role), className: 'nowrap', render: (m) => owner ? (
+              { key: 'role', label: '권한', desc: true, sort: (m) => ROLES.indexOf(m.role), className: 'nowrap', render: (m) => owner && m.role !== 'owner' ? (
                 <select aria-label={`${m.name ?? m.steamId} 권한`} value={m.role} onChange={(e) => save(m.steamId, e.target.value as Role, '권한 변경')}>
-                  {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                  {ASSIGNABLE.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                 </select>
               ) : ROLE_LABEL[m.role] },
               { key: 'addedAt', label: '추가', desc: true, sort: (m) => m.addedAt, className: 'muted small nowrap', render: (m) => fmtTime(m.addedAt) },
               { key: 'lastLoginAt', label: '마지막 로그인', desc: true, sort: (m) => m.lastLoginAt, className: 'muted small nowrap', render: (m) => (m.lastLoginAt ? fmtTime(m.lastLoginAt) : '없음') },
-              ...(owner ? [{ key: 'actions', label: <span className="sr-only">작업</span>, className: 'actions', render: (m: Member) => (
+              ...(owner ? [{ key: 'actions', label: <span className="sr-only">작업</span>, className: 'actions', render: (m: Member) => (m.role === 'owner' ? null : (
                 <button className="btn btn-sm btn-danger-outline" type="button" onClick={() => remove(m)}>빼기</button>
-              ) }] : []),
+              )) }] : []),
             ]} />
           </div>
         )}

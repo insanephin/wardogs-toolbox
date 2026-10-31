@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Action, ActionDetail, Audit as AuditData, FeedEvent, FeedRequestRow } from '../lib/types.ts';
 import { api, errorMessage } from '../lib/api.ts';
 import type { ReactNode } from 'react';
-import { fmtTime, ACTION_LABELS } from '../lib/format.ts';
+import { fmtTime, ACTION_LABELS, STEAM_ID } from '../lib/format.ts';
 import { EventDetail } from '../components/feedItems.tsx';
 import { Icon } from '../components/iconButton.tsx';
 import { Card, PageActions, Empty, useOnAction } from '../components/common.tsx';
@@ -10,6 +10,7 @@ import { Spinner } from '../components/spinner.tsx';
 import { SortTable } from '../components/sortTable.tsx';
 import { IconButton } from '../components/iconButton.tsx';
 import { faRotateRight, faArrowRight } from '@fortawesome/free-solid-svg-icons';
+import { PlayerName } from '../components/playerName.tsx';
 
 const TABS = [['dashboard', '대시보드 작업'], ['rcon', 'RCON 접속 로그'], ['feedRequests', '피드 수신 기록'], ['feedEvents', '피드 이벤트']];
 
@@ -61,8 +62,8 @@ function DashboardLog({ rows }: { rows: Action[] }) {
             { key: 'at', label: '시각', desc: true, sort: (a) => a.at, className: 'nowrap', render: (a) => fmtTime(a.at) },
             { key: 'actor', label: '관리자', sort: (a) => a.actor, render: (a) => a.actor },
             { key: 'action', label: '작업', sort: (a) => ACTION_LABELS[a.action] ?? a.action, render: (a) => ACTION_LABELS[a.action] ?? a.action },
-            { key: 'target', label: '대상', sort: (a) => a.target, className: 'mono small', render: (a) => a.target || '—' },
-            { key: 'detail', label: '내용', className: 'small', render: (a) => describe(a.detail) },
+            { key: 'target', label: '대상', sort: (a) => a.target, className: 'mono small', render: (a) => (a.target && STEAM_ID.test(a.target) ? <PlayerName steamId={a.target} name={a.detail?.name}>{a.target}</PlayerName> : a.target || '—') },
+            { key: 'detail', label: '내용', className: 'small', render: (a) => describe(a.detail, a.target) },
             { key: 'ok', label: '결과', sort: (a) => a.ok, render: (a) => (a.ok ? <span className="tag tag-hs">성공</span> : <span className="tag tag-danger" title={a.error ?? undefined}>실패</span>) },
           ]} />
         </div>
@@ -126,10 +127,10 @@ function FeedEventLog({ rows }: { rows: FeedEvent[] }) {
   );
 }
 
-function describe(d: ActionDetail | null): ReactNode {
+function describe(d: ActionDetail | null, target: string | null = null): ReactNode {
   if (!d) return '—';
   const parts: ReactNode[] = [];
-  if (d.name) parts.push(d.name);
+  if (d.name) parts.push(STEAM_ID.test(target ?? '') ? <PlayerName steamId={target} name={d.name} /> : d.name);
   if (d.reason) parts.push(`사유: ${d.reason}`);
   if (d.message) parts.push(`"${d.message}"`);
   if (d.faction) parts.push(<><Icon icon={faArrowRight} className="inline-icon" aria-label="이동" /> {d.faction}</>);

@@ -1,25 +1,23 @@
 import os, logging
-from discord import Intents, Activity, ActivityType, Object
+from discord import Intents, Activity, ActivityType
 from discord.ext import commands
-from configparser import ConfigParser
-from utils.view import StreamerButton
+from urllib.parse import urlparse
+from utils.view import StreamerButton, ReportButton
 
 
 logger = logging.getLogger(__name__)
-config = ConfigParser()
-config.read("config.ini")
 
-intents = Intents.default()
 
 class Bot(commands.Bot):
     def __init__(self, prefix: str):
         super().__init__(
             help_command=None,
             command_prefix=prefix,
-            intents=intents,
+            intents=Intents.default(),
         )
 
     async def setup_hook(self):
+        await self.load_extension("jishaku")
         try:
             for ext in os.listdir("cogs"):
                 if ext.endswith(".py"):
@@ -27,16 +25,9 @@ class Bot(commands.Bot):
         except Exception:
             logger.error("Failed to load extensions", exc_info=True)
 
-        self.add_dynamic_items(StreamerButton)
-
-        guild_id = config['bot'].get('guild_id')
-        if guild_id:
-            guild = Object(id=int(guild_id))
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
+        self.add_dynamic_items(StreamerButton, ReportButton)
 
     async def on_ready(self):
-        game = Activity(name="WARDOGS", type=ActivityType.playing)
-        await self.change_presence(activity=game)
+        host = urlparse(os.environ.get("PUBLIC_URL", "")).hostname or "wardogs"
+        rpc = Activity(name=host, type=ActivityType.watching)
+        await self.change_presence(activity=rpc)

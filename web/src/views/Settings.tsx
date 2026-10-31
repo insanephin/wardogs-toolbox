@@ -5,12 +5,11 @@ import { api, run, errorMessage, ApiError } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
 import { toast } from '../lib/toast.ts';
 import { fmtTime } from '../lib/format.ts';
+import { OUTCOME_LABEL } from '../lib/labels.ts';
 import { Card, PageActions, Empty } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
 
 type Draft = Record<string, string | boolean>;
-
-const OUTCOME_LABELS: Record<string, string> = { applied: '즉시 적용', 'next-match': '다음 매치', 'next-restart': '서버 재시작 후', pending: '적용 시 확인' };
 
 function toDraft(fields: SettingField[], values: Record<string, SettingValue | null>): Draft {
   const out: Draft = {};
@@ -131,7 +130,7 @@ function FieldInput({ f, value, saved, dirty, locked, applies, shadow, error, di
           {dirty ? <span className="tag tag-hs">적용 전</span> : null}
           {locked ? <span className="tag tag-danger" title={`${locked}로 고정되어 바꿔도 적용되지 않습니다`}>고정</span>
             : shadow ? <span className="tag tag-danger" title={`저장은 됐지만 다른 곳의 설정이 우선해 실제 값은 "${shadow.effective ?? '?'}"입니다`}>가려짐</span>
-              : applies ? <span className="tag" title={applies.description ?? undefined}>{OUTCOME_LABELS[applies.state] ?? applies.state}</span> : null}
+              : applies ? <span className="tag" title={applies.description ?? undefined}>{OUTCOME_LABEL[applies.state] ?? applies.state}</span> : null}
         </span>
       </span>
       {f.type === 'bool' ? (
@@ -214,7 +213,7 @@ function Result({ doc, result }: { doc: SettingsDoc; result: { r: ConfigResult; 
         <ul className="plain-list small">
           {r.outcomes.map((o, i) => {
             const labels = labelsIn(o.section);
-            return <li key={i}><span className="tag">{OUTCOME_LABELS[o.state] ?? o.state}</span>{labels.length ? labels.join(', ') : o.section}{o.detail ? ` · ${o.detail}` : ''}</li>;
+            return <li key={i}><span className="tag">{OUTCOME_LABEL[o.state] ?? o.state}</span>{labels.length ? labels.join(', ') : o.section}{o.detail ? ` · ${o.detail}` : ''}</li>;
           })}
         </ul>
       ) : null}

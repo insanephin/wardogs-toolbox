@@ -7,8 +7,9 @@ import { toast } from '../lib/toast.ts';
 import { fmtAgo, fmtNum } from '../lib/format.ts';
 import { Card, Empty, useNow } from '../components/common.tsx';
 import type { ReactNode } from 'react';
-import type { Capabilities, FeedEndpoint, Live } from '../lib/types.ts';
-import { IconButton } from '../components/iconButton.tsx';
+import type { Capabilities, FeedEndpoint, Live, Member } from '../lib/types.ts';
+import { ROLE_LABEL } from '../lib/labels.ts';
+import { IconButton, Icon } from '../components/iconButton.tsx';
 import { faCopy, faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
 
 type KvRow = [label: string, value: ReactNode, cls?: string];
@@ -100,8 +101,102 @@ export default function Server() {
           </div>
         </Card>
       ) : null}
+      {can('admin') ? <DiscordBotCard /> : null}
       {can('owner') ? <DeleteServerCard /> : null}
     </div>
+  );
+}
+
+const PANEL_KINDS = [
+  { choice: '화이트리스트', label: '화이트리스트 패널', hint: '화이트리스트 인증(접속 우선권)' },
+  { choice: '일반', label: '일반 유저 패널', hint: '서버 접속 · 신고' },
+];
+const panelCommand = (choice: string) => `/패널 종류:${choice}`;
+
+const BOT_RESULTS: Record<string, { ok: boolean; text: string }> = {
+  linked: { ok: true, text: '디스코드 서버에 봇을 추가하고 연결했습니다. 아래 명령어로 패널을 올리세요.' },
+  denied: { ok: false, text: '이 서버의 관리자만 디스코드 서버를 연결할 수 있습니다. 체험 서버는 연결할 수 없습니다.' },
+  cancelled: { ok: false, text: '디스코드 봇 추가를 취소했습니다.' },
+  expired: { ok: false, text: '로그인이 만료되었습니다. 다시 시도해주세요.' },
+  unconfigured: { ok: false, text: '대시보드에 디스코드 봇 설정이 없습니다.' },
+};
+
+interface DiscordBot {
+  configured: boolean;
+  demo: boolean;
+  guild: { id: string; name: string } | null;
+}
+
+function DiscordBotCard() {
+  const serverId = useStore((s) => s.serverId);
+  const [bot, setBot] = useState<DiscordBot | null | undefined>(undefined);
+  const [notice] = useState(() => {
+    const code = new URLSearchParams(location.search).get('discord');
+    return code ? BOT_RESULTS[code] ?? { ok: false, text: '디스코드 서버를 연결하지 못했습니다. 다시 시도해주세요.' } : null;
+  });
+  useEffect(() => {
+    if (notice) history.replaceState(null, '', `/panel${location.hash}`);
+  }, [notice]);
+  const load = () => api<DiscordBot>('GET', '/api/discord-bot').then(setBot, () => setBot(null));
+  useEffect(() => {
+    load();
+  }, [serverId]);
+
+  const copy = async (choice: string) => {
+    try {
+      await navigator.clipboard.writeText(panelCommand(choice));
+      toast('명령어를 복사했습니다');
+    } catch (err) {
+      toast(`복사하지 못했습니다: ${errorMessage(err)}`, 'error');
+    }
+  };
+  const disconnect = async () => {
+    if (!(await confirmAction('디스코드 서버 연결 해제', '이 디스코드 서버에서 새 패널을 올릴 수 없게 됩니다. 이미 올린 패널은 그대로 동작하고, 봇은 디스코드에서 직접 내보내야 합니다.', { confirm: '해제' }))) return;
+    if (await run('디스코드 서버 연결 해제', 'DELETE', '/api/discord-guild')) load();
+  };
+  const connect = `/panel/discord-bot/${serverId}`;
+
+  return (
+    <Card title="디스코드 봇">
+      <div className="card-body stack">
+        {notice ? <div className={`banner ${notice.ok ? 'banner-ok' : 'banner-error'}`} role="status">{notice.text}</div> : null}
+        <div className="stack">
+          <p className="small"><strong>1. 디스코드 서버 연결</strong></p>
+          {bot === undefined ? null : bot?.demo ? (
+            <p className="muted small">체험 서버는 디스코드 서버와 연결할 수 없습니다. 실제 게임 서버를 등록한 뒤 연결하세요.</p>
+          ) : !bot?.configured ? (
+            <p className="muted small">봇을 추가하려면 대시보드 환경 변수 <code>DISCORD_BOT_CLIENT_ID</code>, <code>DISCORD_BOT_CLIENT_SECRET</code>, <code>DISCORD_BOT_SECRET</code>, <code>PUBLIC_URL</code>을 설정하세요.</p>
+          ) : bot.guild ? (
+            <>
+              <span className="muted">{'연결된 디스코드 서버: '}<strong>{bot.guild.name}</strong></span>
+              <div className="inline-field">
+                <a className="btn btn-sm" href={connect}>다른 서버로 바꾸기</a>
+                <button className="btn btn-sm" type="button" onClick={disconnect}>연결 해제</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className="muted">디스코드에서 패널을 올릴 서버를 고르면 봇이 추가되고 이 게임 서버와 연결됩니다. 디스코드 서버 관리 권한이 필요합니다.</span>
+              <a className="btn btn-primary" href={connect}>디스코드 서버에 봇 추가</a>
+            </>
+          )}
+        </div>
+        {bot?.guild ? (
+          <div className="stack">
+            <p className="small"><strong>2. 패널 올리기</strong></p>
+            <span className="muted">{`${bot.guild.name}에서 패널을 올릴 채널에 아래 명령어를 입력하세요. 서버 관리 권한이 있는 디스코드 멤버만 쓸 수 있습니다. 이 디스코드 서버에 게임 서버가 여러 개 연결돼 있으면 서버 옵션에서 고르세요.`}</span>
+            <pre className="code">{panelCommand('일반')}</pre>
+            <div className="inline-field">
+              {PANEL_KINDS.map((k) => (
+                <button key={k.choice} className="btn btn-sm" type="button" title={k.hint} onClick={() => copy(k.choice)}>
+                  <Icon icon={faCopy} /> {`${k.label} 명령어 복사`}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </Card>
   );
 }
 
@@ -124,11 +219,33 @@ function DeleteServerCard() {
     }
   };
 
+  const transfer = async () => {
+    let members: Member[];
+    try {
+      members = await api<Member[]>('GET', '/api/members');
+    } catch (err) {
+      return toast(`관리자 목록을 불러오지 못했습니다: ${errorMessage(err)}`, 'error');
+    }
+    const candidates = members.filter((m) => m.role !== 'owner');
+    if (!candidates.length) return toast('양도할 관리자가 없습니다. 관리자 탭에서 먼저 추가하세요', 'error');
+    const v = await modal({
+      title: '소유권 양도',
+      body: <p>{`${server.name}의 소유자 권한을 넘깁니다. 지금 소유자는 관리자로 바뀌고, 되돌리려면 새 소유자가 다시 양도해야 합니다.`}</p>,
+      fields: [{ name: 'steamId', label: '새 소유자', type: 'select', options: candidates.map((m) => ({ value: m.steamId, label: `${m.name ?? m.steamId} (${ROLE_LABEL[m.role]})` })) }],
+      confirm: '양도',
+      danger: true,
+      hold: true,
+    });
+    if (!v) return;
+    if (await run('소유권 양도', 'POST', '/api/owner', { steamId: v.steamId })) refreshMe();
+  };
+
   return (
-    <Card title="위험 구역">
-      <div className="card-body">
+    <Card title="패널 관리">
+      <div className="card-body"><div className="toolbar">
+        <button className="btn btn-danger-outline" type="button" onClick={transfer}>소유권 양도</button>
         <button className="btn btn-danger-outline" type="button" onClick={remove}>서버 삭제</button>
-      </div>
+      </div></div>
     </Card>
   );
 }

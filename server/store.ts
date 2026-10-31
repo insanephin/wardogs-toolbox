@@ -4,6 +4,8 @@ import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ConfigPreset } from './settings.ts';
+import { createSecretBox, isSealed } from './secret.ts';
+import type { SecretBox } from './secret.ts';
 
 const SCHEMA_VERSION = 2;
 
@@ -52,6 +54,14 @@ CREATE TABLE IF NOT EXISTS server_members (
   PRIMARY KEY (server_id, steam_id)
 );
 CREATE INDEX IF NOT EXISTS server_members_steam ON server_members(steam_id);
+
+CREATE TABLE IF NOT EXISTS panel_sessions (
+  token_hash TEXT PRIMARY KEY,
+  steam_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  guest INTEGER NOT NULL DEFAULT 0,
+  expires INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS account_links (
   steam_id TEXT PRIMARY KEY,
@@ -186,12 +196,22 @@ const SERVER_TABLES: Record<string, string> = {
   duplicates INTEGER,
   error TEXT
 )`,
+  report_images: `CREATE TABLE IF NOT EXISTS report_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL,
+  report_id INTEGER NOT NULL,
+  file TEXT NOT NULL UNIQUE,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+)`,
   reports: `CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   server_id INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   reporter_chzzk_id TEXT, reporter_chzzk_name TEXT,
   reporter_steam_id TEXT, reporter_steam_name TEXT,
+  reporter_discord_id TEXT, reporter_discord_name TEXT,
   target_name TEXT NOT NULL,
   target_steam_id TEXT,
   category TEXT NOT NULL,
@@ -225,6 +245,11 @@ const SERVER_TABLES: Record<string, string> = {
   PRIMARY KEY (server_id, discord_id),
   UNIQUE (server_id, steam_id)
 )`,
+  chzzk_subscribers: `CREATE TABLE IF NOT EXISTS chzzk_subscribers (
+  server_id INTEGER NOT NULL,
+  channel_id TEXT NOT NULL,
+  PRIMARY KEY (server_id, channel_id)
+)`,
   discord_releases: `CREATE TABLE IF NOT EXISTS discord_releases (
   server_id INTEGER NOT NULL,
   steam_id TEXT NOT NULL,
@@ -234,6 +259,7 @@ const SERVER_TABLES: Record<string, string> = {
 };
 
 const SERVER_INDEXES = `
+CREATE INDEX IF NOT EXISTS report_images_report ON report_images(server_id, report_id);
 CREATE INDEX IF NOT EXISTS kills_received ON kills(server_id, received_at);
 CREATE INDEX IF NOT EXISTS kills_killer ON kills(server_id, killer_steam);
 CREATE INDEX IF NOT EXISTS kills_victim ON kills(server_id, victim_steam);
@@ -247,6 +273,8 @@ CREATE INDEX IF NOT EXISTS match_players_seen ON match_players(server_id, last_s
 CREATE INDEX IF NOT EXISTS feed_requests_server ON feed_requests(server_id, id);
 CREATE INDEX IF NOT EXISTS reports_created ON reports(server_id, created_at);
 CREATE INDEX IF NOT EXISTS reports_reporter ON reports(reporter_chzzk_id, created_at);
+CREATE INDEX IF NOT EXISTS reports_steam_reporter ON reports(reporter_steam_id, created_at);
+CREATE INDEX IF NOT EXISTS reports_discord_reporter ON reports(reporter_discord_id, created_at);
 CREATE INDEX IF NOT EXISTS discord_links_steam ON discord_links(steam_id);
 `;
 
@@ -261,6 +289,11 @@ const FEED_REQUEST_KEEP = 5000;
 
 export const ROLES = ['viewer', 'mod', 'admin', 'owner'] as const;
 export type Role = (typeof ROLES)[number];
+export interface DiscordGuild {
+  id: string;
+  name: string;
+}
+
 export const IDENTITY_PROVIDERS = ['discord', 'chzzk', 'twitch'] as const;
 export type IdentityProvider = (typeof IDENTITY_PROVIDERS)[number];
 
@@ -269,8 +302,22 @@ export type WhitelistMode = (typeof WHITELIST_MODES)[number];
 export interface Whitelist {
   mode: WhitelistMode;
   message: string;
+  subscribers: boolean;
 }
-const WHITELIST_DEFAULT: Whitelist = { mode: 'off', message: '화이트리스트에 등록되지 않은 유저입니다.' };
+const WHITELIST_DEFAULT: Whitelist = { mode: 'off', message: '화이트리스트에 등록되지 않은 유저입니다.', subscribers: false };
+
+export interface ChzzkOwner {
+  channelId: string;
+  channelName: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  connectedBy: string;
+  connectedAt: number;
+  syncedAt: number | null;
+  count: number;
+  error: string | null;
+}
 
 export interface EntryGate {
   active: boolean;
@@ -287,7 +334,7 @@ export interface Turnover {
   enabled: boolean;
   message: string;
 }
-const TURNOVER_DEFAULT: Turnover = { enabled: false, message: '맵이 끝나 교대 입장 중입니다. 30초 뒤 다시 접속할 수 있습니다.' };
+const TURNOVER_DEFAULT: Turnover = { enabled: false, message: '미참여 대기인원 우선 입장중입니다. 30초 뒤 다시 시도해주세요.' };
 
 type Row = Record<string, any>;
 
@@ -437,6 +484,8 @@ export interface Report {
   reporterChzzkName: string | null;
   reporterSteamId: string | null;
   reporterSteamName: string | null;
+  reporterDiscordId: string | null;
+  reporterDiscordName: string | null;
   targetName: string;
   targetSteamId: string | null;
   category: string;
@@ -449,11 +498,21 @@ export interface Report {
   note: string | null;
 }
 
-type NewReport = Omit<Report, 'id' | 'serverId' | 'status' | 'handledBy' | 'handledAt' | 'note'>;
+export interface ReportImage {
+  id: number;
+  reportId: number;
+  file: string;
+  mime: string;
+  size: number;
+  createdAt: number;
+}
+
+export type NewReport = Omit<Report, 'id' | 'serverId' | 'status' | 'handledBy' | 'handledAt' | 'note'>;
 
 const REPORT_COLUMNS = `id, server_id AS serverId, created_at AS createdAt,
   reporter_chzzk_id AS reporterChzzkId, reporter_chzzk_name AS reporterChzzkName,
   reporter_steam_id AS reporterSteamId, reporter_steam_name AS reporterSteamName,
+  reporter_discord_id AS reporterDiscordId, reporter_discord_name AS reporterDiscordName,
   target_name AS targetName, target_steam_id AS targetSteamId, category, description,
   evidence_url AS evidenceUrl, map, status, handled_by AS handledBy, handled_at AS handledAt, note`;
 
@@ -470,7 +529,6 @@ export interface ServerRow {
 
 const SERVER_COLUMNS = `id, name, rcon_url AS rconUrl, rcon_password AS rconPassword, feed_token AS feedToken,
   created_at AS createdAt, created_by AS createdBy, join_code AS joinCode`;
-const rowToServer = (r: Row): ServerRow => r as ServerRow;
 
 export interface User {
   steamId: string;
@@ -502,24 +560,43 @@ export const newFeedToken = () => randomBytes(24).toString('base64url');
 interface StoreOptions {
   legacyFeedToken?: string;
   legacyDiscordServerId?: number;
+  secretKey?: string;
+}
+
+export interface StoredSession {
+  steamId: string;
+  name: string;
+  guest: boolean;
+  expires: number;
 }
 
 export class Store {
   db: DatabaseSync;
   #stmts = new Map<string, StatementSync>();
   #scoped = new Map<number, ServerStore>();
+  #secrets: SecretBox;
 
-  constructor(path: string, { legacyFeedToken = '', legacyDiscordServerId = 1 }: StoreOptions = {}) {
+  constructor(path: string, { legacyFeedToken = '', legacyDiscordServerId = 1, secretKey = '' }: StoreOptions = {}) {
+    this.#secrets = createSecretBox(secretKey);
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
     this.migrate(path, legacyFeedToken, legacyDiscordServerId);
+    this.#sealPlainSecrets();
   }
 
   prep(sql: string): StatementSync {
     let s = this.#stmts.get(sql);
     if (!s) this.#stmts.set(sql, (s = this.db.prepare(sql)));
     return s;
+  }
+
+  sealSecret(plain: string): string {
+    return this.#secrets.seal(plain);
+  }
+
+  openSecret(stored: string): string {
+    return this.#secrets.open(stored);
   }
 
   tx<T>(fn: () => T): T {
@@ -557,9 +634,19 @@ export class Store {
       this.db.exec(GLOBAL_TABLES);
       if (!this.columns('servers').has('join_code')) this.db.exec('ALTER TABLE servers ADD COLUMN join_code TEXT');
       this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS servers_join_code ON servers(join_code) WHERE join_code IS NOT NULL');
+      if (this.columns('servers').has('panel_key')) {
+        this.db.exec('DROP INDEX IF EXISTS servers_panel_key');
+        this.db.exec('ALTER TABLE servers DROP COLUMN panel_key');
+      }
+      for (const c of ['discord_guild_id', 'discord_guild_name']) {
+        if (!this.columns('servers').has(c)) this.db.exec(`ALTER TABLE servers ADD COLUMN ${c} TEXT`);
+      }
+      this.db.exec('CREATE INDEX IF NOT EXISTS servers_discord_guild ON servers(discord_guild_id) WHERE discord_guild_id IS NOT NULL');
       if (legacy) this.migrateV0(legacyFeedToken);
       if (globalDiscord) this.migrateV1(legacyDiscordServerId);
       for (const sql of Object.values(SERVER_TABLES)) this.db.exec(sql);
+      const rc = this.columns('reports');
+      for (const c of ['reporter_discord_id', 'reporter_discord_name']) if (!rc.has(c)) this.db.exec(`ALTER TABLE reports ADD COLUMN ${c} TEXT`);
       this.db.exec(SERVER_INDEXES);
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     });
@@ -608,19 +695,34 @@ export class Store {
     return s;
   }
 
+  #rowToServer(r: Row): ServerRow {
+    return { ...r, rconPassword: this.#secrets.open(r.rconPassword) } as ServerRow;
+  }
+
+  #sealPlainSecrets(): void {
+    if (!this.#secrets.enabled) return;
+    const rows = this.db.prepare("SELECT id, rcon_password FROM servers WHERE rcon_password != ''").all() as Row[];
+    const plain = rows.filter((r) => !isSealed(r.rcon_password));
+    if (!plain.length) return;
+    this.tx(() => {
+      for (const r of plain) this.prep('UPDATE servers SET rcon_password = ? WHERE id = ?').run(this.#secrets.seal(r.rcon_password), r.id);
+    });
+    console.log(`[DB] RCON 비밀번호 ${plain.length}개를 암호화했습니다`);
+  }
+
   servers(): ServerRow[] {
-    return (this.prep(`SELECT ${SERVER_COLUMNS} FROM servers ORDER BY id`).all() as Row[]).map(rowToServer);
+    return (this.prep(`SELECT ${SERVER_COLUMNS} FROM servers ORDER BY id`).all() as Row[]).map((r) => this.#rowToServer(r));
   }
 
   server(id: number): ServerRow | null {
     const r = this.prep(`SELECT ${SERVER_COLUMNS} FROM servers WHERE id = ?`).get(id) as Row | undefined;
-    return r ? rowToServer(r) : null;
+    return r ? this.#rowToServer(r) : null;
   }
 
   createServer(name: string, rconUrl: string, rconPassword: string, by: string): ServerRow {
     return this.tx(() => {
       const { lastInsertRowid } = this.prep(`INSERT INTO servers (name, rcon_url, rcon_password, feed_token, created_at, created_by)
-        VALUES (?, ?, ?, ?, ?, ?)`).run(name, rconUrl, rconPassword, newFeedToken(), Date.now(), by);
+        VALUES (?, ?, ?, ?, ?, ?)`).run(name, rconUrl, this.#secrets.seal(rconPassword), newFeedToken(), Date.now(), by);
       const id = Number(lastInsertRowid);
       this.setMember(id, by, 'owner', by);
       return this.server(id)!;
@@ -633,10 +735,44 @@ export class Store {
     };
     const keys = Object.keys(patch).filter((k) => k in cols) as (keyof typeof patch)[];
     if (keys.length) {
-      const values = keys.map((k) => patch[k] as string);
+      const values = keys.map((k) => (k === 'rconPassword' ? this.#secrets.seal(patch[k]!) : patch[k] as string));
       this.db.prepare(`UPDATE servers SET ${keys.map((k) => `${cols[k]} = ?`).join(', ')} WHERE id = ?`).run(...values, id);
     }
     return this.server(id);
+  }
+
+  discordGuild(id: number): DiscordGuild | null {
+    const r = this.prep('SELECT discord_guild_id AS id, discord_guild_name AS name FROM servers WHERE id = ?').get(id) as Row | undefined;
+    return r?.id ? { id: r.id, name: r.name ?? r.id } : null;
+  }
+
+  setDiscordGuild(id: number, guild: DiscordGuild | null): void {
+    this.prep('UPDATE servers SET discord_guild_id = ?, discord_guild_name = ? WHERE id = ?').run(guild?.id ?? null, guild?.name ?? null, id);
+  }
+
+  serverIdsByDiscordGuild(guildId: string): number[] {
+    return (this.prep('SELECT id FROM servers WHERE discord_guild_id = ? ORDER BY id').all(guildId) as Row[]).map((r) => Number(r.id));
+  }
+
+  renameWeapons(renames: [cause: string, name: string][]): void {
+    this.tx(() => {
+      for (const [cause, name] of renames) {
+        const old = (this.prep('SELECT DISTINCT weapon FROM kills WHERE cause = ? AND weapon IS NOT NULL AND weapon != ?').all(cause, name) as Row[])
+          .map((r) => r.weapon as string);
+        if (!old.length) continue;
+        this.prep('UPDATE kills SET weapon = ? WHERE cause = ?').run(name, cause);
+        for (const from of old) {
+          const rows = this.prep('SELECT id, weapons FROM engagements WHERE instr(weapons, ?) > 0').all(JSON.stringify(from)) as Row[];
+          for (const r of rows) {
+            const w = JSON.parse(r.weapons) as Record<string, number>;
+            if (!(from in w)) continue;
+            w[name] = (w[name] ?? 0) + w[from]!;
+            delete w[from];
+            this.prep('UPDATE engagements SET weapons = ? WHERE id = ?').run(JSON.stringify(w), r.id);
+          }
+        }
+      }
+    });
   }
 
   deleteServer(id: number): void {
@@ -683,6 +819,21 @@ export class Store {
     this.prep(`INSERT INTO users (steam_id, name, avatar, created_at, last_login_at) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(steam_id) DO UPDATE SET name = COALESCE(excluded.name, name), avatar = COALESCE(excluded.avatar, avatar),
         last_login_at = COALESCE(excluded.last_login_at, last_login_at)`).run(steamId, name, avatar, now, login ? now : null);
+  }
+
+  saveSession(tokenHash: string, s: StoredSession): void {
+    this.prep('DELETE FROM panel_sessions WHERE expires < ?').run(Date.now());
+    this.prep('INSERT INTO panel_sessions (token_hash, steam_id, name, guest, expires) VALUES (?, ?, ?, ?, ?)')
+      .run(tokenHash, s.steamId, s.name, s.guest ? 1 : 0, s.expires);
+  }
+
+  session(tokenHash: string): StoredSession | null {
+    const r = this.prep('SELECT steam_id, name, guest, expires FROM panel_sessions WHERE token_hash = ?').get(tokenHash) as Row | undefined;
+    return r ? { steamId: r.steam_id, name: r.name, guest: !!r.guest, expires: r.expires } : null;
+  }
+
+  deleteSession(tokenHash: string): void {
+    this.prep('DELETE FROM panel_sessions WHERE token_hash = ?').run(tokenHash);
   }
 
   identities(steamId: string): Identity[] {
@@ -747,10 +898,52 @@ export class Store {
     return !!this.prep('SELECT 1 FROM discord_links WHERE steam_id = ? AND discord_id != ? LIMIT 1').get(steamId, discordId);
   }
 
-  reportsByReporter(chzzkId: string, { since = 0, limit = 50 } = {}): (Report & { serverName: string | null })[] {
+  reportImage(id: number): (ReportImage & { serverId: number; reporterSteamId: string | null; reporterDiscordId: string | null }) | null {
+    return (this.prep(`SELECT i.id, i.server_id AS serverId, i.report_id AS reportId, i.file, i.mime, i.size, i.created_at AS createdAt,
+      r.reporter_steam_id AS reporterSteamId, r.reporter_discord_id AS reporterDiscordId
+      FROM report_images i JOIN reports r ON r.id = i.report_id AND r.server_id = i.server_id WHERE i.id = ?`).get(id) as any) ?? null;
+  }
+
+  reportImagesBytes(): number {
+    return Number((this.prep('SELECT COALESCE(SUM(size), 0) AS n FROM report_images').get() as Row).n);
+  }
+
+  expiredReportImages(before: number): { id: number; file: string }[] {
+    return this.prep(`SELECT i.id, i.file FROM report_images i
+      LEFT JOIN reports r ON r.id = i.report_id AND r.server_id = i.server_id
+      WHERE r.id IS NULL OR (r.status != 'open' AND r.handled_at < ?)`).all(before) as { id: number; file: string }[];
+  }
+
+  reportImageFiles(): Set<string> {
+    return new Set((this.prep('SELECT file FROM report_images').all() as Row[]).map((r) => String(r.file)));
+  }
+
+  deleteReportImage(id: number): void {
+    this.prep('DELETE FROM report_images WHERE id = ?').run(id);
+  }
+
+  reportById(id: number): Report | null {
+    return (this.prep(`SELECT ${REPORT_COLUMNS} FROM reports WHERE id = ?`).get(id) as Report | undefined) ?? null;
+  }
+
+  reportImageIds(reportIds: number[]): Map<number, number[]> {
+    const out = new Map<number, number[]>();
+    if (!reportIds.length) return out;
+    const rows = this.prep(`SELECT id, report_id AS reportId FROM report_images WHERE report_id IN (${reportIds.map(() => '?').join(',')}) ORDER BY id`)
+      .all(...reportIds) as { id: number; reportId: number }[];
+    for (const r of rows) out.set(r.reportId, [...(out.get(r.reportId) ?? []), r.id]);
+    return out;
+  }
+
+  reportsByReporter(steamId: string, { since = 0, limit = 50 } = {}): (Report & { serverName: string | null })[] {
     return this.prep(`SELECT r.*, (SELECT name FROM servers WHERE id = r.serverId) AS serverName
-      FROM (SELECT ${REPORT_COLUMNS} FROM reports WHERE reporter_chzzk_id = ? AND created_at >= ? ORDER BY id DESC LIMIT ?) r`)
-      .all(chzzkId, since, limit) as Row[] as (Report & { serverName: string | null })[];
+      FROM (SELECT ${REPORT_COLUMNS} FROM reports
+        WHERE reporter_steam_id = ? AND reporter_discord_id IS NULL AND created_at >= ? ORDER BY id DESC LIMIT ?) r`)
+      .all(steamId, since, limit) as Row[] as (Report & { serverName: string | null })[];
+  }
+
+  reportCountByDiscord(discordId: string, since: number): number {
+    return Number((this.prep('SELECT COUNT(*) AS n FROM reports WHERE reporter_discord_id = ? AND created_at >= ?').get(discordId, since) as Row).n);
   }
 
   logFeedRequest(serverId: number | null, r: FeedRequest): void {
@@ -906,10 +1099,24 @@ export class ServerStore {
   addReport(r: NewReport): Report {
     const { lastInsertRowid } = this.#run(`INSERT INTO reports
       (server_id, created_at, reporter_chzzk_id, reporter_chzzk_name, reporter_steam_id, reporter_steam_name,
-       target_name, target_steam_id, category, description, evidence_url, map)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.createdAt, r.reporterChzzkId, r.reporterChzzkName,
-    r.reporterSteamId, r.reporterSteamName, r.targetName, r.targetSteamId, r.category, r.description, r.evidenceUrl, r.map);
+       reporter_discord_id, reporter_discord_name, target_name, target_steam_id, category, description, evidence_url, map)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.createdAt, r.reporterChzzkId, r.reporterChzzkName,
+    r.reporterSteamId, r.reporterSteamName, r.reporterDiscordId, r.reporterDiscordName, r.targetName, r.targetSteamId, r.category, r.description, r.evidenceUrl, r.map);
     return this.report(Number(lastInsertRowid))!;
+  }
+
+  addReportImage(reportId: number, file: string, mime: string, size: number, at: number): number {
+    return Number(this.#run('INSERT INTO report_images (server_id, report_id, file, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      reportId, file, mime, size, at).lastInsertRowid);
+  }
+
+  reportImageCount(reportId: number): number {
+    return Number(this.#get('SELECT COUNT(*) AS n FROM report_images WHERE server_id = ? AND report_id = ?', reportId)!.n);
+  }
+
+  reportImageOf(reportId: number, imageId: number): ReportImage | null {
+    return (this.#get(`SELECT id, report_id AS reportId, file, mime, size, created_at AS createdAt
+      FROM report_images WHERE server_id = ? AND report_id = ? AND id = ?`, reportId, imageId) as ReportImage | undefined) ?? null;
   }
 
   report(id: number): Report | null {
@@ -1117,13 +1324,38 @@ export class ServerStore {
     this.#setSetting('config_presets', list);
   }
 
+  chzzkOwner(): ChzzkOwner | null {
+    const o = this.#setting<ChzzkOwner | null>('chzzk_owner', null);
+    return o && { ...o, accessToken: this.root.openSecret(o.accessToken), refreshToken: this.root.openSecret(o.refreshToken) };
+  }
+
+  setChzzkOwner(o: ChzzkOwner | null): void {
+    if (!o) return void this.#run('DELETE FROM server_settings WHERE server_id = ? AND key = ?', 'chzzk_owner');
+    this.#setSetting('chzzk_owner', { ...o, accessToken: this.root.sealSecret(o.accessToken), refreshToken: this.root.sealSecret(o.refreshToken) });
+  }
+
+  replaceSubscribers(channelIds: string[]): void {
+    this.root.tx(() => {
+      this.#run('DELETE FROM chzzk_subscribers WHERE server_id = ?');
+      for (const id of new Set(channelIds)) this.#run('INSERT INTO chzzk_subscribers (server_id, channel_id) VALUES (?, ?)', id);
+    });
+  }
+
+  subscribedOf(channelIds: string[]): Set<string> {
+    if (!channelIds.length) return new Set();
+    return new Set(this.#all('SELECT channel_id FROM chzzk_subscribers WHERE server_id = ? AND channel_id IN (SELECT value FROM json_each(?))',
+      JSON.stringify(channelIds)).map((r) => r.channel_id));
+  }
+
   whitelistBans(): WhitelistBan[] {
+    const subscribers = this.whitelist().subscribers ? 1 : 0;
     return this.root.prep(`SELECT w.steam_id AS steamId, w.name, w.created_at AS createdAt, w.last_error AS lastError,
-        (a.steam_id IS NOT NULL OR d.steam_id IS NOT NULL) AS linked
+        (d.steam_id IS NOT NULL OR (a.steam_id IS NOT NULL AND (? = 0 OR s.channel_id IS NOT NULL))) AS linked
       FROM whitelist_bans w LEFT JOIN account_links a ON a.steam_id = w.steam_id
       LEFT JOIN discord_links d ON d.server_id = w.server_id AND d.steam_id = w.steam_id
+      LEFT JOIN chzzk_subscribers s ON s.server_id = w.server_id AND s.channel_id = a.chzzk_channel_id
       WHERE w.server_id = ?
-      ORDER BY w.created_at DESC`).all(this.id).map((r) => ({ ...r, linked: !!r.linked }) as WhitelistBan);
+      ORDER BY w.created_at DESC`).all(subscribers, this.id).map((r) => ({ ...r, linked: !!r.linked }) as WhitelistBan);
   }
 
   addWhitelistBan(steamId: string, name: string | null | undefined): void {

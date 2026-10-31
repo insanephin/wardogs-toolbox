@@ -4,19 +4,25 @@ import { fmtTime, fmtClock, fmtDist, fmtAgo, pct, TAG_LABELS, describeEvent, kil
 import { Icon } from './iconButton.tsx';
 import { faArrowRight } from '@fortawesome/free-solid-svg-icons';
 import { useFactionColor, Fdot } from './common.tsx';
+import { useStore } from '../lib/store.ts';
 import { SortTable } from './sortTable.tsx';
+import { PlayerName } from './playerName.tsx';
 
 export function EventDetail({ e }: { e: FeedEvent }) {
-  if (e.type !== 'killed' || e.suicide) return <>{describeEvent(e)}</>;
+  if ((e.type === 'player_joined' || e.type === 'player_left') && e.steamId) {
+    return <>{e.type === 'player_joined' ? '입장' : '퇴장'}: <PlayerName steamId={e.steamId} name={e.playerName} /> (현재 {e.players}명)</>;
+  }
+  if (e.type !== 'killed') return <>{describeEvent(e)}</>;
+  if (e.suicide) return <>자살: <PlayerName steamId={e.victimSteamId} name={e.victimName}>{e.victimName || e.victimSteamId || '?'}</PlayerName></>;
   const k = killParts(e);
-  return <>킬: {k.killer} <Icon icon={faArrowRight} className="inline-icon" aria-label="처치" /> {k.victim}{k.extra}</>;
+  return <>킬: <PlayerName steamId={e.killerSteamId} name={e.killerName}>{k.killer}</PlayerName> <Icon icon={faArrowRight} className="inline-icon" aria-label="처치" /> <PlayerName steamId={e.victimSteamId} name={e.victimName}>{k.victim}</PlayerName>{k.extra}</>;
 }
 
 const SHOWN_TAGS = ['Headshot', 'Penetration', 'Ricochet', 'WeaponMelee', 'VehicleExplosion', 'RoadKill', 'Falling'];
 
 function Who({ name, steamId, faction }: { name: string | null; steamId: string | null; faction: string | null }) {
   const color = useFactionColor();
-  return <span className="who" title={steamId || ''}><Fdot color={color(faction)} />{name || steamId || '환경'}</span>;
+  return <span className="who"><Fdot color={color(faction)} /><PlayerName steamId={steamId} name={name}>{name || steamId || '환경'}</PlayerName></span>;
 }
 
 export const KillRow = memo(function KillRow({ k, compact = false }: { k: Kill; compact?: boolean; now?: number }) {
@@ -32,7 +38,7 @@ export const KillRow = memo(function KillRow({ k, compact = false }: { k: Kill; 
       <span className="kill-meta">
         {k.teamkill ? <span className="tag tag-danger" title="폴링으로 본 진영 기준 추정">팀킬</span> : null}
         {tags.map((t) => <span key={t} className={`tag${t === 'Headshot' ? ' tag-hs' : ''}`}>{TAG_LABELS[t] || t}</span>)}
-        {k.distanceM != null ? <span className="kill-dist">{fmtDist(k.distanceM)}</span> : null}
+        <span className="kill-dist">{k.distanceM != null ? fmtDist(k.distanceM) : '—'}</span>
       </span>
     </div>
   );
@@ -59,23 +65,37 @@ export function KillTable({ rows, limit }: { rows: Kill[]; limit?: number }) {
   );
 }
 
-export function EngagementCard({ g }: { g: Engagement }) {
+function EngBar({ factions }: { factions: Engagement['factions'] }) {
   const color = useFactionColor();
+  const order = Object.keys(useStore((s) => s.colors));
+  const rank = (f: string) => (order.includes(f) ? order.indexOf(f) : order.length);
+  const rows = Object.entries(factions).sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
+  const total = rows.reduce((s, [, n]) => s + n, 0);
+  return (
+    <div className="eng-bar" aria-label="진영별 킬 비중">
+      {rows.map(([f, n]) => (
+        <span key={f} style={{ width: `${(n / total) * 100}%`, background: color(f) || 'var(--muted)' }} title={`${f}: ${n}킬`} />
+      ))}
+    </div>
+  );
+}
+
+export function engagementMeta(g: Engagement) {
   const duration = g.startTime != null && g.endTime != null ? g.endTime - g.startTime : (g.endedAt - g.startedAt) / 1000;
-  const factions = Object.entries(g.factions).sort((a, b) => b[1] - a[1]);
-  const total = factions.reduce((s, [, n]) => s + n, 0);
+  return `${fmtTime(g.startedAt)} · ${Math.max(1, Math.round(duration))}초${g.map ? ` · ${g.map}` : ''}`;
+}
+
+export function EngagementCard({ g, head = true }: { g: Engagement; head?: boolean }) {
   const topWeapons = Object.entries(g.weapons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([w, n]) => `${w} ${n}`).join(', ');
   return (
     <div className="eng">
-      <div className="eng-head">
-        <strong>교전 #{g.id}</strong>
-        <span className="muted small">{`${fmtTime(g.startedAt)} · ${Math.max(1, Math.round(duration))}초 · ${g.map ?? ''}`}</span>
-      </div>
-      <div className="eng-bar" aria-label="진영별 킬 비중">
-        {factions.map(([f, n]) => (
-          <span key={f} style={{ width: `${(n / total) * 100}%`, background: color(f) || 'var(--muted)' }} title={`${f}: ${n}킬`} />
-        ))}
-      </div>
+      {head ? (
+        <div className="eng-head">
+          <strong>교전 #{g.id}</strong>
+          <span className="muted small">{engagementMeta(g)}</span>
+        </div>
+      ) : null}
+      <EngBar factions={g.factions} />
       <div className="eng-stats">
         <span><b>{g.kills}</b> 킬</span>
         <span><b>{g.participants.length}</b> 명</span>

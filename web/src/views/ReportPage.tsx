@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { fmtTime, charCount } from '../lib/format.ts';
 import { call } from '../lib/publicApi.ts';
+import { prepareImage } from '../lib/image.ts';
 import { Spinner } from '../components/spinner.tsx';
 import { Icon } from '../components/iconButton.tsx';
 import { faChevronDown, faChevronUp } from '@fortawesome/free-solid-svg-icons';
@@ -12,6 +13,7 @@ interface MyReport {
   targetName: string;
   status: string;
   serverName: string | null;
+  images: number[];
 }
 
 interface ReportState {
@@ -28,6 +30,15 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   rejected: { label: '반려', cls: 'muted' },
 };
 const MAX_DESCRIPTION = 1000;
+const MAX_IMAGES = 3;
+
+async function uploadImage(reportId: number, blob: Blob): Promise<void> {
+  const res = await fetch(`/api/report/${reportId}/images`, {
+    method: 'POST', body: blob, credentials: 'same-origin',
+    headers: { 'X-Requested-With': 'wardogs-dashboard', 'Content-Type': blob.type },
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error?.message || `업로드 실패 (${res.status})`);
+}
 
 function signInError(r: string | null): string {
   if (!r || r === 'linked' || r === 'proven') return '';
@@ -45,6 +56,18 @@ export default function ReportPage({ code }: { code: string | null }) {
   const [description, setDescription] = useState('');
   const [showMine, setShowMine] = useState(false);
   const [server, setServer] = useState<number | null>(null);
+  const [images, setImages] = useState<{ file: File; url: string }[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const addImages = (list: FileList | null) => {
+    const picked = [...(list ?? [])].filter((f) => /^image\/(jpeg|png|webp)$/.test(f.type));
+    setImages((cur) => [...cur, ...picked.map((file) => ({ file, url: URL.createObjectURL(file) }))].slice(0, MAX_IMAGES));
+    if (fileRef.current) fileRef.current.value = '';
+  };
+  const removeImage = (i: number) => setImages((cur) => {
+    URL.revokeObjectURL(cur[i]!.url);
+    return cur.filter((_, j) => j !== i);
+  });
 
   useEffect(() => {
     call<ReportState>('GET', `/api/report/me${code ? `?${new URLSearchParams({ server: code })}` : ''}`).then((r) => {
@@ -61,16 +84,28 @@ export default function ReportPage({ code }: { code: string | null }) {
     setError('');
     setDone(false);
     try {
-      const r = await call<{ mine: MyReport[] }>('POST', '/api/report', {
+      const r = await call<{ id: number; mine: MyReport[] }>('POST', '/api/report', {
         server,
         code,
         targetName: fd.get('targetName'),
         description,
       });
-      setSt((s) => (s ? { ...s, mine: r.mine } : s));
+      const failed: string[] = [];
+      for (const img of images) {
+        try {
+          await uploadImage(r.id, await prepareImage(img.file));
+        } catch (ex) {
+          failed.push((ex as Error).message);
+        }
+      }
+      const mine = images.length ? (await call<ReportState>('GET', `/api/report/me${code ? `?${new URLSearchParams({ server: code })}` : ''}`).catch(() => null))?.mine ?? r.mine : r.mine;
+      setSt((s) => (s ? { ...s, mine } : s));
       form.reset();
       setDescription('');
+      images.forEach((img) => URL.revokeObjectURL(img.url));
+      setImages([]);
       setDone(true);
+      if (failed.length) setError(`신고는 접수되었지만 이미지 ${failed.length}장을 올리지 못했습니다: ${[...new Set(failed)].join(' / ')}`);
     } catch (ex) {
       setError((ex as Error).message);
     }
@@ -89,9 +124,9 @@ export default function ReportPage({ code }: { code: string | null }) {
 
       {!st ? <p className="empty"><Spinner /></p> : !st.reporter ? (
         <div className="stack">
-          <p className="public-lead">신고하려면 먼저 치지직으로 로그인하세요.</p>
+          <p className="public-lead">신고하려면 먼저 스팀으로 로그인하세요.</p>
           {st.configured
-            ? <a className="btn btn-primary btn-block" href={`/auth/chzzk?${new URLSearchParams({ next: 'report', ...(code && { s: code }) })}`}>치지직으로 로그인</a>
+            ? <a className="btn btn-primary btn-block" href={`/auth/steam?${new URLSearchParams({ next: 'report', ...(code && { s: code }) })}`}>스팀으로 로그인</a>
             : <p className="muted small">로그인이 아직 설정되지 않았습니다.</p>}
         </div>
       ) : (
@@ -118,6 +153,26 @@ export default function ReportPage({ code }: { code: string | null }) {
               <textarea name="description" className="small" rows={5} required value={description} onChange={(e) => setDescription(e.target.value)}
                 placeholder="언제, 어느 맵에서, 무슨 일이 있었는지 적어주세요" />
             </label>
+            <div className="field">
+              <span className="field-label"><span>이미지 (선택)</span><span>{`${images.length}/${MAX_IMAGES}`}</span></span>
+              {images.length ? (
+                <div className="thumbs">
+                  {images.map((img, i) => (
+                    <div key={img.url} className="thumb-wrap">
+                      <img className="thumb" src={img.url} alt={`첨부 이미지 ${i + 1}`} />
+                      <button type="button" className="thumb-remove" aria-label={`이미지 ${i + 1} 빼기`} onClick={() => removeImage(i)}>×</button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {images.length < MAX_IMAGES ? (
+                <label className="btn btn-block">
+                  이미지 추가
+                  <input ref={fileRef} className="sr-only" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => addImages(e.target.files)} />
+                </label>
+              ) : null}
+              <span className="hint">JPG·PNG·WebP, 최대 {MAX_IMAGES}장. 관리자와 본인만 볼 수 있습니다.</span>
+            </div>
             <button className="btn btn-primary btn-block" type="submit" disabled={busy || server == null || charCount(description) > MAX_DESCRIPTION}>신고 접수</button>
           </form>
 
@@ -130,9 +185,20 @@ export default function ReportPage({ code }: { code: string | null }) {
               {showMine ? (
                 <ul id="my-reports" className="plain-list">
                   {st.mine.map((r) => (
-                    <li key={r.id} className="row-between small">
-                      <span>{r.targetName} <span className="muted">{st.servers.length > 1 && r.serverName ? `${r.serverName} · ` : ''}{fmtTime(r.createdAt)}</span></span>
-                      <span className={STATUS[r.status]?.cls}>{STATUS[r.status]?.label ?? r.status}</span>
+                    <li key={r.id} className="stack small">
+                      <div className="row-between">
+                        <span>{r.targetName} <span className="muted">{st.servers.length > 1 && r.serverName ? `${r.serverName} · ` : ''}{fmtTime(r.createdAt)}</span></span>
+                        <span className={STATUS[r.status]?.cls}>{STATUS[r.status]?.label ?? r.status}</span>
+                      </div>
+                      {r.images?.length ? (
+                        <div className="thumbs">
+                          {r.images.map((id) => (
+                            <a key={id} href={`/api/report/images/${id}`} target="_blank" rel="noopener noreferrer">
+                              <img className="thumb" src={`/api/report/images/${id}`} alt="첨부 이미지" loading="lazy" />
+                            </a>
+                          ))}
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

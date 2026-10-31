@@ -1,5 +1,4 @@
-import { weaponName } from './weapons.ts';
-import type { WeaponNames } from './weapons.ts';
+import type { WeaponLookup } from './weapons.ts';
 import type { ServerStore as Store, Kill, MatchEvent, OpenEngagement, Engagement } from './store.ts';
 import type { Emit } from './http.ts';
 
@@ -32,7 +31,7 @@ interface FeedEvent extends MatchEvent {
 
 interface FeedOptions {
   store: Store;
-  weapons: WeaponNames;
+  weapons: WeaponLookup;
   gapSec: number;
   minKills: number;
   factionOf: (steamId: string) => string | null;
@@ -42,7 +41,7 @@ interface FeedOptions {
 
 export class FeedProcessor {
   store: Store;
-  weapons: WeaponNames;
+  weapons: WeaponLookup;
   gapSec: number;
   minKills: number;
   factionOf: (steamId: string) => string | null;
@@ -149,7 +148,7 @@ export class FeedProcessor {
       victimName: e.victimName ?? null,
       victimFaction,
       cause: e.cause ?? null,
-      weapon: weaponName(this.weapons, e.cause),
+      weapon: this.weapons.name(e.cause),
       distanceM: typeof e.distance === 'number' ? Math.round(e.distance) / 100 : null,
       tags,
       headshot: tags.includes('Headshot'),

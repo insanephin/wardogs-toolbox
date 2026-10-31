@@ -37,7 +37,7 @@ function PublicApp() {
     if (location.search) history.replaceState(null, '', location.pathname);
   }, []);
   useEffect(() => {
-    document.title = reporting ? '신고' : landing ? TITLE : serverName ? `${serverName} · 계정 등록` : '계정 등록';
+    document.title = reporting ? '신고' : landing ? TITLE : serverName ?? '계정 등록';
   }, [reporting, serverName, landing]);
 
   const report = reporting ? (

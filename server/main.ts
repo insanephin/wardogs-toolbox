@@ -10,7 +10,7 @@ import { Router, HttpError, SseHub, sendJson, readJson, parseCookies, serveStati
 import { RconError } from './rcon.ts';
 import { Store } from './store.ts';
 import type { Role } from './store.ts';
-import { loadWeaponNames } from './weapons.ts';
+import { WeaponNames } from './weapons.ts';
 import { registerApi } from './api.ts';
 import { createLinking } from './link.ts';
 import type { Account, PanelResult, Provider } from './link.ts';
@@ -22,6 +22,9 @@ import { createFleet } from './fleet.ts';
 import type { ServerRuntime } from './fleet.ts';
 import { registerServers, roleOf } from './servers.ts';
 import { createDemo, GUEST_STEAM_ID, GUEST_NAME } from './demo.ts';
+import { createChzzkSubscribers } from './chzzk.ts';
+import { connectKv } from './kv.ts';
+import type { Kv } from './kv.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wd_session';
@@ -32,9 +35,8 @@ const PUBLIC_PAGES = new Set(['/', '/report']);
 const RESERVED = new Set(['panel', 'rcon', 'report', 'assets', 'api', 'auth', 'callback', 'discord', 'terms', 'privacy']);
 const POLICY_URL = 'https://insanephin.xyz/projects/wardogs-rcon';
 const POLICY_PAGES = new Set(['/terms', '/privacy']);
-// Guests may only read their own session info and use the demo server, minus settings that reach beyond it.
 const GUEST_GLOBAL = /^\/api\/(me|servers|account|map-art)$/;
-const GUEST_BLOCKED = /^\/api\/s\/\d+\/(server|members\/[^/]+|rcon|feed-token(\/rotate)?|links\/[^/]+)$/;
+const GUEST_BLOCKED = /^\/api\/s\/\d+\/(server|owner|chzzk-owner(\/sync)?|members\/[^/]+|rcon|feed-token(\/rotate)?|discord-guild|links\/[^/]+)$/;
 
 function notFound(url: URL, res: ServerResponse) {
   if (/^\/(rcon\/)?assets\//.test(url.pathname)) {
@@ -45,13 +47,14 @@ function notFound(url: URL, res: ServerResponse) {
   res.end();
 }
 
-function createApp(config: Config) {
-  const auth = new Auth(config.superadmins);
-  const store = new Store(config.dbPath, { legacyFeedToken: config.feedToken, legacyDiscordServerId: config.discord.legacyServerId });
+function createApp(config: Config, kv: Kv) {
+  const store = new Store(config.dbPath, { legacyFeedToken: config.feedToken, legacyDiscordServerId: config.discord.legacyServerId, secretKey: config.dbSecretKey });
+  const auth = new Auth(config.superadmins, store);
   const hub = new SseHub();
   const steam = createSteamProfiles(config.steam.apiKey);
-  const weapons = loadWeaponNames(join(ROOT, 'data/weapons.json'));
-  const demo = createDemo(store, weapons);
+  const weapons = new WeaponNames(join(ROOT, 'data/weapons.json'));
+  weapons.watch((renames) => store.renameWeapons(renames));
+  const demo = createDemo(store, weapons.readOnly());
   const fleet = createFleet({
     store, hub, steam, weapons,
     gapSec: config.engagementGapSec,
@@ -61,15 +64,10 @@ function createApp(config: Config) {
   fleet.load();
 
   const router = new Router();
-  const discord = createDiscord({ config, store, fleet, superadmins: auth.superadmins });
-  registerApi(router, { fleet, store, config, discord, steam });
+  const discord = createDiscord({ config, store, fleet, kv });
+  const subscribers = createChzzkSubscribers(config, fleet);
+  registerApi(router, { fleet, store, config, discord, steam, subscribers });
   discord.register(router);
-  const clientIp = (req: IncomingMessage): string | undefined => {
-    const cf = req.headers['cf-connecting-ip'];
-    return config.trustProxy && typeof cf === 'string' && cf ? cf : req.socket.remoteAddress;
-  };
-  const adminAllowed = (req: IncomingMessage) => !config.adminAllowIps.length || config.adminAllowIps.includes(clientIp(req) ?? '');
-
   const cookie = (value: string, maxAge: number) =>
     `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${config.cookieSecure ? '; Secure' : ''}`;
 
@@ -87,8 +85,7 @@ function createApp(config: Config) {
     return { result: 'linked', cookie: cookie(id, 12 * 3600) };
   };
 
-  const linking = createLinking(config, store, {
-    allowed: adminAllowed,
+  const linking = createLinking(config, store, kv, {
     sessionOf: (req) => {
       const sid = parseCookies(req.headers.cookie)[COOKIE];
       return auth.session(sid) ? sid : undefined;
@@ -110,9 +107,51 @@ function createApp(config: Config) {
       endPanelSession(previous);
       return cookie('', 0);
     },
-  }, () => fleet.all().filter((s) => !s.demo).map((s) => ({ id: s.id, name: s.name, joinCode: s.joinCode, public: s.public })), discord);
+    canManage: (panelSid, serverId) => {
+      const s = auth.session(panelSid);
+      const srv = fleet.get(serverId);
+      const role = s && !s.guest && srv && !srv.demo && roleOf(store, s, serverId, fleet);
+      return !!role && hasRole(role, 'admin');
+    },
+    chzzkOwner: async (panelSid, serverId, token, channel) => {
+      const s = auth.session(panelSid);
+      if (!s) return 'expired';
+      const srv = fleet.get(serverId);
+      const role = srv && !s.guest && roleOf(store, s, serverId, fleet);
+      if (!srv || srv.demo || !role || !hasRole(role, 'admin')) return 'denied';
+      void subscribers.connect(srv, token, channel, s.name);
+      srv.emit('action', srv.store.logAction(s.name, 'chzzk_owner_connect', channel.id, { name: channel.name }, true));
+      console.log(`[치지직] #${srv.id} ${srv.name} 구독 확인 채널 연결: ${channel.name} (${channel.id}) by ${s.name}`);
+      return 'linked';
+    },
+    discordGuild: (panelSid, serverId, guild) => {
+      const s = auth.session(panelSid);
+      if (!s) return 'expired';
+      const srv = fleet.get(serverId);
+      const role = srv && !s.guest && roleOf(store, s, serverId, fleet);
+      if (!srv || srv.demo || !role || !hasRole(role, 'admin')) return 'denied';
+      store.setDiscordGuild(srv.id, guild);
+      srv.emit('action', srv.store.logAction(s.name, 'discord_guild_connect', guild.id, { name: guild.name }, true));
+      console.log(`[디스코드] #${srv.id} ${srv.name} 디스코드 서버 연결: ${guild.name} (${guild.id}) by ${s.name}`);
+      return 'linked';
+    },
+  }, () => fleet.all().map((s) => ({
+    id: s.id, name: s.name, joinCode: s.joinCode, public: s.public, demo: s.demo,
+    status: () => ({
+      online: s.poller.online,
+      players: s.poller.players.length,
+      maxPlayers: s.poller.status?.players?.max ?? null,
+      map: s.poller.status?.map ?? null,
+    }),
+    entry: () => {
+      const wl = s.store.whitelist();
+      const rule = wl.mode === 'off' ? 'open' as const : wl.subscribers ? 'subscribers' as const : 'linked' as const;
+      return { rule, channel: rule === 'subscribers' ? s.store.chzzkOwner()?.channelName ?? null : null };
+    },
+    passes: (link) => !s.store.whitelist().subscribers || s.store.subscribedOf([link.chzzkChannelId]).size > 0,
+  })), discord);
   linking.register(router);
-  registerReports(router, { store, fleet, configured: linking.configured, accounts: linking.accounts });
+  registerReports(router, { store, fleet, configured: linking.configured, accounts: linking.accounts, bot: discord.bot, imagesDir: join(dirname(config.dbPath), 'report-images') });
   registerServers(router, { store, fleet, hub, steam, configured: linking.configured });
 
   router.add('POST', '/api/logout', { public: true }, ({ sessionId, res }) => {
@@ -135,9 +174,6 @@ function createApp(config: Config) {
     if ('methodMismatch' in m) return sendJson(res, 405, { error: { code: 'method_not_allowed' } });
     const { route, params } = m;
 
-    if (!route.opts.public && !adminAllowed(req)) {
-      return sendJson(res, 404, { error: { code: 'not_found', message: '없는 API입니다' } });
-    }
     const sessionId = parseCookies(req.headers.cookie)[COOKIE];
     const session = auth.session(sessionId);
     let srv: ServerRuntime | null = null;
@@ -179,7 +215,6 @@ function createApp(config: Config) {
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname === '/panel/demo' && req.method === 'GET') {
-      if (!adminAllowed(req)) return notFound(url, res);
       endPanelSession(parseCookies(req.headers.cookie)[COOKIE]);
       const sid = auth.login(GUEST_STEAM_ID, GUEST_NAME, true);
       res.writeHead(302, { Location: '/panel', 'Set-Cookie': cookie(sid, 12 * 3600), 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
@@ -203,12 +238,11 @@ function createApp(config: Config) {
       } catch {}
       if (code && fleet.byJoinCode(code)) return serveShell(PUBLIC_DIST, '/index.html', res);
     }
-    if (path === '/rcon' && adminAllowed(req)) {
+    if (path === '/rcon') {
       res.writeHead(301, { Location: `/panel${url.search}`, ...SECURITY_HEADERS });
       return res.end();
     }
     if (path === '/panel' || url.pathname.startsWith('/panel/assets/')) {
-      if (!adminAllowed(req)) return notFound(url, res);
       if (path === '/panel') return serveShell(ADMIN_DIST, '/admin.html', res);
       if (await serveStatic(ADMIN_DIST, url.pathname.slice('/panel'.length), res)) return;
     }
@@ -230,33 +264,32 @@ function createApp(config: Config) {
 
   const server = createServer((req, res) => handle(req, res).catch(onError(res)));
 
-  return { server, auth, fleet, discord, linking, demo };
+  return { server, auth, fleet, discord, linking, demo, subscribers };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = loadConfig();
-  const app = createApp(config);
+  const kv = await connectKv(config).catch((err) => {
+    console.error(`[Redis] 연결하지 못해 시작을 멈춥니다: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  });
+  console.log(`[Redis] ${config.redis.host}:${config.redis.port} db${config.redis.db}에 연결했습니다`);
+  const app = createApp(config, kv);
   const servers = app.fleet.all().filter((s) => !s.demo);
   console.log(`게임 서버 ${servers.length}개: ${servers.map((s) => `#${s.id} ${s.name}`).join(', ') || '없음'}`);
-  for (const s of servers) if (!s.rcon.baseUrl || !s.rcon.password) console.warn(`[경고] 서버 #${s.id} ${s.name}: RCON 연결 정보가 없습니다.`);
-  if (!app.auth.superadmins.size) console.warn('[경고] SUPERADMIN_STEAM_IDS가 비어 있어 서버를 추가하거나 기존 서버를 관리할 사람이 없습니다.');
-  if (!app.linking.configured.steam) console.warn('[경고] STEAM_WEB_API_KEY 또는 PUBLIC_URL이 비어 있어 관리자 패널에 로그인할 수 없습니다.');
-  if (config.discord.botSecret && !app.discord.configured) console.warn('[경고] 디스코드 봇 인증을 쓰려면 PUBLIC_URL(또는 CHZZK_REDIRECT_URL)이 필요합니다.');
-  if (config.host !== '127.0.0.1' && config.host !== 'localhost' && !config.cookieSecure) {
-    console.warn(`[안내] DASH_HOST=${config.host}. 이 포트를 다른 컴퓨터에 공개한다면 TLS 리버스 프록시 뒤에 두고 COOKIE_SECURE=true를 설정하세요.`);
-  }
   app.server.listen(config.port, config.host, () => {
     console.log(`Wardogs RCON 패널: http://${config.host}:${config.port}/panel`);
     console.log(`이벤트 피드 수신: http://<이 서버 주소>:${config.port}/api/ingest/events`);
   });
-  if (config.adminAllowIps.length) console.log(`관리자 허용 IP: ${config.adminAllowIps.join(', ')}`);
   app.fleet.start();
   app.demo.start(app.fleet);
   app.discord.start();
+  app.subscribers.start();
   const shutdown = () => {
+    app.subscribers.stop();
     app.fleet.stop();
     app.server.close();
-    process.exit(0);
+    kv.close().catch(() => {}).finally(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

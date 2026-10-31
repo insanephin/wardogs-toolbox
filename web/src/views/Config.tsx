@@ -3,11 +3,10 @@ import type { ConfigDoc, ConfigResult } from '../lib/types.ts';
 import { api, errorMessage, ApiError } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
 import { toast } from '../lib/toast.ts';
+import { OUTCOME_LABEL } from '../lib/labels.ts';
 import { Card, Empty } from '../components/common.tsx';
 
 type Panel = { warnings: unknown[]; result?: undefined } | { result: ConfigResult; applied: boolean };
-
-const OUTCOME_LABELS: Record<string, string> = { applied: '즉시 적용', 'next-match': '다음 매치', 'next-restart': '다음 재시작', pending: '확인 중' };
 
 export default function Config() {
   const [doc, setDoc] = useState<ConfigDoc | null>(null);
@@ -164,7 +163,7 @@ function ResultPanel({ panel }: { panel: Panel | null }) {
       ) : null}
       {removed.length ? <div className="banner banner-error">삭제될 섹션: {removed.map((c) => c.section).join(', ')}</div> : null}
       <List title="바뀌는 섹션" items={(r.changed || []).filter((c) => !c.removed).map((c) => `${c.section}${c.added ? ' (추가)' : ''}${c.keys?.length ? `: ${c.keys.join(', ')}` : ''}`)} />
-      <List title="적용 결과" items={(r.outcomes || []).map((o) => `${o.section}: ${OUTCOME_LABELS[o.state] ?? o.state}${o.detail ? ` · ${o.detail}` : ''}`)} />
+      <List title="적용 결과" items={(r.outcomes || []).map((o) => `${o.section}: ${OUTCOME_LABEL[o.state] ?? o.state}${o.detail ? ` · ${o.detail}` : ''}`)} />
       <List title="상위 설정에 가려진 키" items={r.shadowed} />
       <List title="이 빌드가 모르는 키 (제거됨)" items={r.stripped} />
       <List title="경고" items={r.warnings} />

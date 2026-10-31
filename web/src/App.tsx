@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ComponentType, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useStore, setState, getState, can, colorsFrom, withEngagements, currentServer, pickServer, selectServer } from './lib/store.ts';
 import { api, errorMessage, scoped, refreshMe } from './lib/api.ts';
@@ -8,29 +8,41 @@ import { ModalHost } from './lib/modal.tsx';
 import { fmtAgo } from './lib/format.ts';
 import { useNow, Avatar, setPageActionSlot } from './components/common.tsx';
 import Overview from './views/Overview.tsx';
-import Players from './views/Players.tsx';
-import Feed from './views/Feed.tsx';
-import Moderation from './views/Moderation.tsx';
-import Links from './views/Links.tsx';
-import Match from './views/Match.tsx';
-import Config from './views/Config.tsx';
-import Settings from './views/Settings.tsx';
-import Audit from './views/Audit.tsx';
-import Server from './views/Server.tsx';
-import Reports from './views/Reports.tsx';
-import Members from './views/Members.tsx';
 import { openCreateServer } from './components/createServer.tsx';
-import Account from './views/Account.tsx';
 import { ROLE_LABEL } from './lib/labels.ts';
 import { Spinner } from './components/spinner.tsx';
 import { IconButton, Icon } from './components/iconButton.tsx';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import {
-  faChevronDown, faPlus, faCheck, faRightFromBracket, faGauge, faUsers, faCrosshairs, faMap, faLink, faBan, faFlag,
+  faChevronDown, faPlus, faCheck, faRightFromBracket, faGauge, faUsers, faCrosshairs, faMap, faLink, faStar, faBan, faFlag,
   faPlug, faSliders, faFileCode, faClockRotateLeft, faUserShield,
 } from '@fortawesome/free-solid-svg-icons';
 
 const KILL_BUFFER = 300;
+
+const LOADERS: (() => Promise<{ default: ComponentType }>)[] = [];
+const lazyView = (load: () => Promise<{ default: ComponentType }>) => {
+  LOADERS.push(load);
+  return lazy(load);
+};
+const Players = lazyView(() => import('./views/Players.tsx'));
+const Feed = lazyView(() => import('./views/Feed.tsx'));
+const Moderation = lazyView(() => import('./views/Moderation.tsx'));
+const Links = lazyView(() => import('./views/Links.tsx'));
+const Whitelist = lazyView(() => import('./views/Whitelist.tsx'));
+const Match = lazyView(() => import('./views/Match.tsx'));
+const Config = lazyView(() => import('./views/Config.tsx'));
+const Settings = lazyView(() => import('./views/Settings.tsx'));
+const Audit = lazyView(() => import('./views/Audit.tsx'));
+const Server = lazyView(() => import('./views/Server.tsx'));
+const Reports = lazyView(() => import('./views/Reports.tsx'));
+const Members = lazyView(() => import('./views/Members.tsx'));
+const Account = lazyView(() => import('./views/Account.tsx'));
+const preloadViews = () => {
+  const run = () => LOADERS.forEach((load) => load().catch(() => {}));
+  if ('requestIdleCallback' in window) requestIdleCallback(run, { timeout: 3000 });
+  else setTimeout(run, 1500);
+};
 
 interface Page {
   id: string;
@@ -40,7 +52,6 @@ interface Page {
   View?: ComponentType;
   tabs?: Page[];
   hidden?: boolean;
-  // Fit the viewport and scroll only inside the table. 'split' = grid-main layout with a side column.
   fill?: 'card' | 'split';
 }
 
@@ -50,7 +61,8 @@ const VIEWS: Page[] = [
   { id: 'feed', label: '전투 기록', icon: faCrosshairs, View: Feed, role: 'viewer', fill: 'split' },
   { id: 'match', label: '경기 운영', icon: faMap, View: Match, role: 'viewer' },
   { id: 'access', label: '접속 관리', role: 'viewer', tabs: [
-    { id: 'links', label: '계정 연동·화이트리스트', icon: faLink, View: Links, role: 'viewer', fill: 'split' },
+    { id: 'links', label: '계정 연동', icon: faLink, View: Links, role: 'viewer', fill: 'split' },
+    { id: 'whitelist', label: '화이트리스트', icon: faStar, View: Whitelist, role: 'viewer', fill: 'split' },
     { id: 'moderation', label: '밴·예약 슬롯', icon: faBan, View: Moderation, role: 'viewer', fill: 'split' },
   ] },
   { id: 'reports', label: '신고', icon: faFlag, View: Reports, role: 'viewer', fill: 'card' },
@@ -206,7 +218,7 @@ function useLiveStream() {
       source = new EventSource(scoped('/api/stream'));
       on<Live>('live', (live) => setState((s) => ({ live, colors: colorsFrom(live, s.colors) })));
       on<Capabilities>('capabilities', (caps) => setState({ caps }));
-      on<Kill>('kill', (k) => setState((s) => ({ kills: [k, ...s.kills].slice(0, KILL_BUFFER) })));
+      on<Kill>('kill', (k) => setState((s) => ({ kills: [k, ...s.kills].slice(0, Math.max(KILL_BUFFER, s.kills.length)) })));
       on<Engagement>('engagement', (g) => setState((s) => ({ engagements: withEngagements(s.engagements, [g]) })));
       on<FeedEvent>('matchEvent', (ev) => setState((s) => ({ matchEvents: [ev, ...s.matchEvents].slice(0, 200) })));
       on<FeedStatus>('feed', (feed) => setState((s) => (s.live ? { live: { ...s.live, feed } } : {})));
@@ -242,6 +254,7 @@ function Shell({ me }: { me: Me }) {
   const role = currentServer()?.role ?? null;
   const stale = useStore((s) => !!s.live && !s.live.online);
 
+  useEffect(preloadViews, []);
   useEffect(() => {
     mainRef.current?.focus({ preventScroll: true });
     mainRef.current?.parentElement?.scrollTo(0, 0);
@@ -269,7 +282,6 @@ function Shell({ me }: { me: Me }) {
         <div className="side-foot"><MeBox me={me} role={role} active={page.id === 'account'} /></div>
       </aside>
       <div className={stale ? 'app-main is-stale' : 'app-main'}>
-        {me.demo ? <div className="demo-banner" role="note">데모 체험 중입니다. 가상의 게임 서버라 버튼을 눌러도 실제 서버에는 영향이 없고, 6시간마다 처음 상태로 돌아갑니다.</div> : null}
         <header className="page-head">
           <h1>{page.label}</h1>
           <div className="page-head-right">
@@ -278,7 +290,7 @@ function Shell({ me }: { me: Me }) {
           </div>
         </header>
         <main id="main" tabIndex={-1} ref={mainRef} className={page.fill ? `main-fill main-fill-${page.fill}` : undefined}>
-          {page.View ? <div key={page.id} className="page-body"><page.View /></div> : null}
+          {page.View ? <div key={page.id} className="page-body"><Suspense fallback={<Spinner />}><page.View /></Suspense></div> : null}
         </main>
       </div>
     </div>

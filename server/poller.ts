@@ -1,5 +1,5 @@
 import type { RconClient, RconError, GameStatus, GamePlayer } from './rcon.ts';
-import type { ServerStore as Store, MatchPlayerDelta, DiscordLink } from './store.ts';
+import type { ServerStore as Store, MatchPlayerDelta, DiscordLink, Link } from './store.ts';
 import type { FeedProcessor } from './feed.ts';
 import { errorMessage } from './http.ts';
 import type { Emit } from './http.ts';
@@ -146,17 +146,23 @@ export class Poller {
         await this.rcon.loadCapabilities();
         this.lastCapsAt = now;
         const f = this.rcon.features;
-        this.serverId = f.serverId ? await this.rcon.serverId().catch(() => null) : null;
+        [this.serverId, this.version] = await Promise.all([
+          f.serverId ? this.rcon.serverId().catch(() => null) : null,
+          f.version ? this.rcon.version().catch(() => null) : null,
+        ]);
         if (this.serverId) this.onServerId(this.serverId);
-        this.version = f.version ? await this.rcon.version().catch(() => null) : null;
         this.emit('capabilities', this.capabilitiesView());
       }
 
       const [status, players] = await Promise.all([this.rcon.status(), this.rcon.players()]);
       if (now - this.lastHealthAt > HEALTH_EVERY_MS) {
         const f = this.rcon.features;
-        if (f.health) this.health = await this.rcon.health().catch(() => null);
-        if (f.feed) this.gameFeed = await this.rcon.feedHealth().catch(() => null);
+        const [health, gameFeed] = await Promise.all([
+          f.health ? this.rcon.health().catch(() => null) : this.health,
+          f.feed ? this.rcon.feedHealth().catch(() => null) : this.gameFeed,
+        ]);
+        this.health = health;
+        this.gameFeed = gameFeed;
         this.lastHealthAt = now;
         this.rotationStale = true;
       }
@@ -476,7 +482,7 @@ export class Poller {
     }
 
     if (mode === 'off' || !this.players.length) return;
-    const linked = this.store.linksBySteam(this.steamIds());
+    const linked = this.passingLinks(this.steamIds());
     for (const p of this.players) {
       if (!budget) return;
       if (!p.steamId || linked.has(p.steamId) || streamers.has(p.steamId)) continue;
@@ -524,12 +530,22 @@ export class Poller {
     };
   }
 
+  passingLinks(steamIds: string[]): Map<string, Link> {
+    const links = this.store.linksBySteam(steamIds);
+    if (!this.store.whitelist().subscribers) return links;
+    const subscribed = this.store.subscribedOf([...links.values()].map((l) => l.chzzkChannelId));
+    for (const [id, l] of links) if (!subscribed.has(l.chzzkChannelId)) links.delete(id);
+    return links;
+  }
+
   playersView(streamers: Map<string, DiscordLink>) {
     const links = this.store.linksBySteam(this.steamIds());
+    const subscribed = this.store.subscribedOf([...links.values()].map((l) => l.chzzkChannelId));
     return this.players.map((p) => ({
       ...p,
       joinedAt: (p.steamId && this.joinedAt.get(p.steamId)) || null,
       link: (p.steamId && links.get(p.steamId)) || null,
+      subscriber: !!p.steamId && subscribed.has(links.get(p.steamId)?.chzzkChannelId ?? ''),
       streamer: (p.steamId && streamers.get(p.steamId)) || null,
       avatar: (p.steamId && this.steam?.cached(p.steamId)?.avatar) || null,
     }));

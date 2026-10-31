@@ -1,26 +1,26 @@
 x-app: &app
   image: node:22.13-bookworm-slim
   working_dir: /app
-  user: "${DOCKER_USER:-1000:1000}"
+  user: "1001:1001"
   volumes:
     - ./:/app
   restart: unless-stopped
 
 services:
-  dashboard:
+  web:
     <<: *app
     command: ["node", "--watch", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "server/main.ts"]
     env_file:
       - path: .env
         required: true
     environment:
-      TRUST_PROXY: "true"
       COOKIE_SECURE: "true"
       DB_PATH: /app/data/dashboard.db
     ports:
-      - "8087:8080"
+      - "127.0.0.1:8087:8080"
     networks:
       - app
+      - dbs
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -31,7 +31,9 @@ services:
       - ./bot:/app
     working_dir: /app
     depends_on:
-      - dashboard
+      - web
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL}
     networks:
       - app
     command: [
@@ -42,3 +44,5 @@ services:
 networks:
   app:
     driver: bridge
+  dbs:
+    external: true

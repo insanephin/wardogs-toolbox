@@ -1,21 +1,14 @@
 import { createHash } from 'node:crypto';
 import { RconClient, RconError } from './rcon.ts';
 import { FeedProcessor } from './feed.ts';
-import { getValue, parseRotationEntry, rotationEntriesInDoc, reservedIdsInDoc, setReservedInDoc, formatRotationEntry } from './inidoc.ts';
+import { getValue, parseRotationEntry, rotationEntriesInDoc, reservedIdsInDoc, setReservedInDoc, sameSelection, type RotationEntry } from './inidoc.ts';
 import type { Store, ServerRow, MatchPlayerDelta } from './store.ts';
-import type { WeaponNames } from './weapons.ts';
+import type { WeaponLookup } from './weapons.ts';
 import type { Fleet } from './fleet.ts';
 
-// Simulated game servers that live in the main DB, built from the official sandbox at
-// rcon.wardogs.com (js/test-data.js, js/test-data-2.js, ServerSettings.ini, js/mock-server.js).
-// Guests reach them from the landing page without logging in; every panel button acts on
-// the simulation instead of a real game. Rebuilt with fresh history on boot and every RESET_MS.
+const DEMO_PREFIX = 'demo://';
+const isDemoUrl = (url: string | null | undefined) => !!url?.startsWith(DEMO_PREFIX);
 
-export const DEMO_PREFIX = 'demo://';
-export const isDemoUrl = (url: string | null | undefined) => !!url?.startsWith(DEMO_PREFIX);
-
-// The sandbox uses real-range SteamIDs (7656119810000xxxx). We shift them below the first real
-// SteamID64 (76561197960265728) so demo rows can never collide with an actual player.
 const REAL_STEAM_MIN = '76561197960265728';
 export const isDemoSteamId = (id: string) => id.length === 17 && id < REAL_STEAM_MIN;
 const demoId = (official: string) => `76561197${official.slice(8)}`;
@@ -38,8 +31,6 @@ const S_SESSION = '/Script/WDGame.WDGameSession';
 const S_ENGINE = '/Script/Engine.GameSession';
 const S_KOTH = 'MatchState.Playing.KOTH';
 const S_ROTATION = '/Script/WDGame.WDServerMapRotationSettings';
-
-// ---- Official sandbox data (rcon.wardogs.com js/test-data.js) ----
 
 const FACTIONS = [
   { name: 'Valkyra', label: 'RED', colorHex: '#D86060' },
@@ -82,98 +73,89 @@ const ALTERNATORS_BY_MAP: Record<string, { tag: string; displayName: string }[]>
     { tag: 'ZoneAlternator.Factory.Split', displayName: 'Bakurani Factory Split' },
   ],
 };
-const UNKNOWN_NAMES = ['Wanderer', 'Ratbag', 'Tinker', 'Mosswood', 'Hexagon', 'Drifter', 'Bramble', 'Coyote', 'Ferrous', 'Nightcap', 'Pigeon', 'Slate'];
+const UNKNOWN_NAMES = ['스나이퍼', '텀블러', '알파벳', '악마', '쥬쥬', '아이스', '연봉', '썩은물', '인공눈물', '누누', '매니큐어', '악몽'];
 
-// Mirrors MOCK_CONFIG_SCHEMA so the settings page shows when each key takes effect.
 const CONFIG_SECTIONS = [
-  { section: S_SESSION, appliesWhen: 'applied', description: 'Server identity, bans, reserved slots and the sponsor banner.',
+  { section: S_SESSION, appliesWhen: 'applied', description: '서버 정보, 밴, 예약 슬롯, 스폰서 배너.',
     keyOverrides: [
-      { key: 'ServerPassword', appliesWhen: 'applied', description: 'Sent on the session update this apply triggers, so it gates new joins at once. Players already in are not rechecked.' },
-      { key: 'ServerImageURL', appliesWhen: 'pending', description: 'Fetched and validated off-thread before the banner is advertised.' },
+      { key: 'ServerPassword', appliesWhen: 'applied', description: '적용 시 세션 업데이트로 바로 전송되어 새 접속부터 막습니다. 이미 접속한 플레이어는 다시 확인하지 않습니다.' },
+      { key: 'ServerImageURL', appliesWhen: 'pending', description: '배너를 표시하기 전에 백그라운드에서 받아와 검증합니다.' },
     ] },
-  { section: S_ENGINE, appliesWhen: 'next-restart', description: 'Player slot count. Not applied to a running server by choice, so a change takes effect on restart.', keyOverrides: [] },
-  { section: '/Script/WDGame.WDGameStateSession', appliesWhen: 'next-match', description: 'Team balance rules. The running match keeps its current values.', keyOverrides: [] },
-  { section: S_ROTATION, appliesWhen: 'applied', description: 'Map rotation order and mode. Rebuilt immediately; used from the next map change.', keyOverrides: [] },
-  { section: S_KOTH, appliesWhen: 'next-match', description: 'KOTH scoring. Scoring cadence never changes mid-round.', keyOverrides: [] },
-  { section: 'MatchState.PreMatch.WaitingForPlayers.PlayerCount', appliesWhen: 'next-match', description: 'Minimum players before a match starts. Read when the next pre-match begins.', keyOverrides: [] },
+  { section: S_ENGINE, appliesWhen: 'next-restart', description: '최대 인원. 실행 중인 서버에는 적용하지 않으므로 재시작 후 반영됩니다.', keyOverrides: [] },
+  { section: '/Script/WDGame.WDGameStateSession', appliesWhen: 'next-match', description: '팀 밸런스 규칙. 진행 중인 매치는 기존 값을 유지합니다.', keyOverrides: [] },
+  { section: S_ROTATION, appliesWhen: 'applied', description: '맵 로테이션 순서와 방식. 바로 다시 만들어지고 다음 맵 변경부터 쓰입니다.', keyOverrides: [] },
+  { section: S_KOTH, appliesWhen: 'next-match', description: 'KOTH 점수. 라운드 도중에는 점수 주기가 바뀌지 않습니다.', keyOverrides: [] },
+  { section: 'MatchState.PreMatch.WaitingForPlayers.PlayerCount', appliesWhen: 'next-match', description: '매치 시작에 필요한 최소 인원. 다음 매치 대기가 시작될 때 읽습니다.', keyOverrides: [] },
 ];
 
-// The sandbox's blank-login server loads this file over its built-in data.
-const SERVER_SETTINGS_INI = `;|======================================================================================================|
-;| Wardogs Dedicated Server Standalone Config                                                           |
-;|                                                                                                      |
-;| Only the keys below are honored. The server's allow-list (AllowedConfigs in                          |
-;| DedicatedServerEngine.ini) strips any section or key that is not whitelisted,                        |
-;| so adding extra keys here does nothing. Settings apply at server startup.                            |
-;|                                                                                                      |
-;| Lines you do not want to set can be deleted or commented via ";" -- omitted keys keep their default. |
-;|======================================================================================================|
-
+const SERVER_SETTINGS_INI = `;|==============================================================================|
+;| 워독스 데디케이티드 서버 단독 설정 파일
+;|
+;| 아래 키만 적용됩니다. 서버 허용 목록(DedicatedServerEngine.ini의 AllowedConfigs)에
+;| 없는 섹션이나 키는 지워지므로 여기에 다른 키를 추가해도 효과가 없습니다.
+;| 설정은 서버 시작 시 적용됩니다.
+;|
+;| 쓰지 않을 줄은 지우거나 ";"로 주석 처리하세요. 빠진 키는 기본값을 씁니다.
+;|==============================================================================|
 
 [/Script/WDGame.WDGameSession]
-; Display name shown in the server browser.
-ServerName=Wardogs Demo Server
+; 서버 목록에 보이는 이름.
+ServerName=워독스 데모 서버
 
-; Join password. Leave empty for an open server.
+; 접속 비밀번호. 비워두면 누구나 접속할 수 있습니다.
 ServerPassword=
 
-; Player cash bounds. 0 = no restriction.
+; 플레이어 보유 금액 제한. 0 = 제한 없음.
 ServerMinPlayerCash=0
 ServerMaxPlayerCash=0
 
-; Player level bounds. 0 = no restriction.
+; 플레이어 레벨 제한. 0 = 제한 없음.
 ServerMinPlayerLevel=0
 ServerMaxPlayerLevel=0
 
-; Sponsor banner image URL. Must be 1024x256 PNG/JPEG and on the server's image allow-list.
+; 스폰서 배너 이미지 URL. 1024x256 PNG/JPEG이고 서버 이미지 허용 목록에 있어야 합니다.
 ServerImageURL=https://i.postimg.cc/5N5ynGcY/Server-Browser-Image.jpg
 
-; Reserved slots: max count, then one '+DefaultReservedPlayerIds=' line per SteamID64.
-; The RCON 'reserved add/remove' commands edit these and persist back here.
+; 예약 슬롯: 최대 개수, 그다음 SteamID64마다 '+DefaultReservedPlayerIds=' 한 줄.
+; RCON 'reserved add/remove' 명령이 이 목록을 고치고 여기에 다시 저장합니다.
 MaxReservedSlots=20
 +DefaultReservedPlayerIds="76561198000000001"
 ; +DefaultReservedPlayerIds="76561198000000002"
 
-; Banned players: one '+DefaultBannedPlayerIds=' line per SteamID64.
-; The RCON ban/unban commands edit these and persist back here.
+; 밴된 플레이어: SteamID64마다 '+DefaultBannedPlayerIds=' 한 줄.
+; RCON ban/unban 명령이 이 목록을 고치고 여기에 다시 저장합니다.
 +DefaultBannedPlayerIds="76561198000000003"
 ; +DefaultBannedPlayerIds="76561198000000004"
 
-
 [/Script/Engine.GameSession]
 
-; Maximum players. Clamped by the developer-set Lowest/HighestAllowedMaxPlayers.
+; 최대 인원. 개발사가 정한 Lowest/HighestAllowedMaxPlayers 범위로 제한됩니다.
 MaxPlayers=32
-
 
 [MatchState.PreMatch.WaitingForPlayers.PlayerCount]
 
-; Players required to move from pre-match into the match.
+; 매치 대기에서 매치로 넘어가는 데 필요한 인원.
 MinimumRequiredPlayers=60
-
 
 [MatchState.Playing.KOTH]
 
-; KOTH score tick period in seconds. Clamped by the developer-set Min/MaxScorePeriod.
+; KOTH 점수 주기(초). 개발사가 정한 Min/MaxScorePeriod 범위로 제한됩니다.
 ScorePeriod=24
-
 
 [/Script/WDGame.WDGameStateSession]
 
-; Team balancing: lock joining an overpopulated team once it leads by the threshold.
+; 팀 밸런스: 인원 차이가 기준을 넘으면 많은 쪽 팀 합류를 막습니다.
 bLockOverpopulatedTeamsConfig=true
 OverpopulatedTeamThresholdConfig=2
 
-
 [/Script/WDGame.WDServerMapRotationSettings]
 
-; Turn the rotation on and pick the order mode (Ordered or Random).
+; 로테이션을 켜고 순서 방식(Ordered 또는 Random)을 고릅니다.
 bEnabled=true
 RotationMode=Ordered
 
-; One entry per line. Experience (singular) = one experience; Experiences (plural) = several
-; joined with '+'. Lighting is an allowed lighting scenario. ZoneAlternator is optional -- omit
-; it to keep the map's authored default control-zone alternator.
+; 한 줄에 하나씩. Experience(단수) = 모드 하나, Experiences(복수) = '+'로 이은 여러 모드.
+; Lighting은 허용된 조명 시나리오입니다. ZoneAlternator는 선택이며, 빼면 맵 기본 점령 구역을 씁니다.
 +RotationEntries=(Map="Kavkazi",Experience="Bakurani_KOTH_01",Lighting="DayClear",ZoneAlternator="ZoneAlternator.Factory.Circle")
 +RotationEntries=(Map="Europe",Experiences="Madrid_KOTH_01+KOTH_InfantryOnly",Lighting="DayLateGray")
 +RotationEntries=(Map="Europe",Experiences="Madrid_KOTH_01",Lighting="DayLateClear")
@@ -197,52 +179,48 @@ interface Profile {
   initialScores: number[];
   players: OfficialPlayer[];
   joiners: string[];
-  joinerIdBase: number;
+  joinerIdBase: bigint;
   bans: { steamId: string; bannedAtUtc: string; bannedBy: string; reason: string | null }[];
   directory: Record<string, string>;
   audit: { minutesAgo: number; peer: string; session: string; event: string; detail: string }[];
   feedHealthy: boolean;
 }
 
-const rotationLine = (map: string, experiences: string[], lighting: string, alternator?: string) =>
-  `+RotationEntries=${formatRotationEntry({ map, experiences, lighting, alternator })}`;
-
 const PROFILES: Profile[] = [
   {
-    // Blank host/port/password on the sandbox login.
     key: 'test1',
     label: '빈칸 로그인',
     config: SERVER_SETTINGS_INI,
     scoreRates: [0.55, 0.42, 0.48],
     initialScores: [34, 27, 30],
     players: [
-      { name: 'Ghostpepper', steamId: '76561198100000101', faction: 'RED', kills: 14, deaths: 6, cash: 5200, ping: 31 },
-      { name: 'Mad Marmalade', steamId: '76561198100000102', faction: 'RED', kills: 9, deaths: 11, cash: 3100, ping: 48 },
-      { name: 'T0XIC_AVENGER', steamId: '76561198100000103', faction: 'RED', kills: 6, deaths: 4, cash: 2650, ping: 22 },
-      { name: 'Sgt. Bricktop', steamId: '76561198100000104', faction: 'RED', kills: 3, deaths: 9, cash: 1400, ping: 95 },
-      { name: 'Nomad', steamId: '76561198100000105', faction: 'BLU', kills: 17, deaths: 8, cash: 6800, ping: 27 },
-      { name: 'Willowisp', steamId: '76561198100000106', faction: 'BLU', kills: 11, deaths: 10, cash: 4100, ping: 64 },
-      { name: 'Unlinked Recruit', steamId: null, faction: 'BLU', kills: 2, deaths: 5, cash: 900, ping: 58 },
-      { name: 'KillustratorPro', steamId: '76561198100000107', faction: 'BLU', kills: 8, deaths: 5, cash: 3300, ping: 41 },
-      { name: 'Baron von Blam', steamId: '76561198100000108', faction: 'BLU', kills: 2, deaths: 12, cash: 900, ping: 138 },
-      { name: 'QuietStorm', steamId: '76561198100000109', faction: 'GRN', kills: 13, deaths: 7, cash: 5000, ping: 33 },
-      { name: 'Dutchie', steamId: '76561198100000110', faction: 'GRN', kills: 10, deaths: 10, cash: 3800, ping: 55 },
-      { name: 'Rooikat', steamId: '76561198100000111', faction: 'GRN', kills: 7, deaths: 3, cash: 2900, ping: 73 },
-      { name: 'Last_Mag', steamId: '76561198100000112', faction: 'GRN', kills: 5, deaths: 14, cash: 1750, ping: 19 },
+      { name: '레드', steamId: '76561198100000101', faction: 'RED', kills: 14, deaths: 6, cash: 5200, ping: 31 },
+      { name: '채미안', steamId: '76561198100000102', faction: 'RED', kills: 9, deaths: 11, cash: 3100, ping: 48 },
+      { name: '윤하율몽아', steamId: '76561198100000103', faction: 'RED', kills: 6, deaths: 4, cash: 2650, ping: 22 },
+      { name: '뽀뽀르이', steamId: '76561198100000104', faction: 'RED', kills: 3, deaths: 9, cash: 1400, ping: 95 },
+      { name: '은은결아', steamId: '76561198100000105', faction: 'BLU', kills: 17, deaths: 8, cash: 6800, ping: 27 },
+      { name: '안슬현', steamId: '76561198100000106', faction: 'BLU', kills: 11, deaths: 10, cash: 4100, ping: 64 },
+      { name: '테테', steamId: null, faction: 'BLU', kills: 2, deaths: 5, cash: 900, ping: 58 },
+      { name: '이이별뽀이', steamId: '76561198100000107', faction: 'BLU', kills: 8, deaths: 5, cash: 3300, ping: 41 },
+      { name: '푸르로서', steamId: '76561198100000108', faction: 'BLU', kills: 2, deaths: 12, cash: 900, ping: 138 },
+      { name: '솔솔', steamId: '76561198100000109', faction: 'GRN', kills: 13, deaths: 7, cash: 5000, ping: 33 },
+      { name: '몽셀제', steamId: '76561198100000110', faction: 'GRN', kills: 10, deaths: 10, cash: 3800, ping: 55 },
+      { name: '슈가세이', steamId: '76561198100000111', faction: 'GRN', kills: 7, deaths: 3, cash: 2900, ping: 73 },
+      { name: '셀셀뽀밀크', steamId: '76561198100000112', faction: 'GRN', kills: 5, deaths: 14, cash: 1750, ping: 19 },
     ],
-    joiners: ['Copperhead', 'Late_to_the_party', 'VelvetThunder', 'Brick', 'Saltmine', 'Ostrich Wrangler', '0xDEADBEEF', 'Pretty Average', 'Whistler', 'Junkrat Jane'],
-    joinerIdBase: 76561198100000401,
+    joiners: ['루이니런', '체리여루', '제아밀이', '예혁채이', '세라노이', '담혁혁이', '허니이', '르모모', '와드', '꿀벌', '냉동인간', '주차금지', '외국인', '칠각형', '오빠', '한강', '파닥', '구구콘', '양국', '버블', '체리', '마이너스', '히딩크', '다운로드'],
+    joinerIdBase: 76561198100000401n,
     bans: [
-      { steamId: '76561198000000003', bannedAtUtc: '-', bannedBy: 'config', reason: '(set in ServerSettings.ini)' },
-      { steamId: '76561198100000301', bannedAtUtc: '2026-08-09 21:14:02Z', bannedBy: 'joe', reason: 'Cheating - aimbot' },
-      { steamId: '76561198100000302', bannedAtUtc: '2026-08-10 09:41:55Z', bannedBy: 'console', reason: 'Griefing teammates' },
-      { steamId: '76561198100000303', bannedAtUtc: '2026-08-11 16:03:10Z', bannedBy: 'joe', reason: 'Toxic voice chat' },
-      { steamId: '76561198100000304', bannedAtUtc: '2026-08-12 10:22:47Z', bannedBy: 'sarah', reason: 'Exploiting map geometry' },
+      { steamId: '76561198000000003', bannedAtUtc: '-', bannedBy: 'config', reason: '(ServerSettings.ini에서 설정)' },
+      { steamId: '76561198100000301', bannedAtUtc: '2026-08-09 21:14:02Z', bannedBy: '딩동', reason: '핵 사용 - 에임봇' },
+      { steamId: '76561198100000302', bannedAtUtc: '2026-08-10 09:41:55Z', bannedBy: 'console', reason: '아군 방해' },
+      { steamId: '76561198100000303', bannedAtUtc: '2026-08-11 16:03:10Z', bannedBy: '딩동', reason: '음성 채팅 욕설' },
+      { steamId: '76561198100000304', bannedAtUtc: '2026-08-12 10:22:47Z', bannedBy: '햄버거', reason: '맵 버그 악용' },
     ],
     directory: {
-      '76561198100000201': 'Wren', '76561198100000202': 'BigDoggo', '76561198100000203': 'Meridian',
-      '76561198100000301': 'xX_Reaper_Xx', '76561198100000302': 'Sandcastle', '76561198100000303': 'GrumbleGus', '76561198100000304': 'Voltaic',
-      '76561198000000001': 'Bulkhead_Dev', '76561198000000003': 'SaltySeadog',
+      '76561198100000201': '런셀레우', '76561198100000202': '제젤리온', '76561198100000203': '무푸르베리',
+      '76561198100000301': '서온루레몽', '76561198100000302': '우엘', '76561198100000303': '모모', '76561198100000304': '여셀베리이',
+      '76561198000000001': '유러비담', '76561198000000003': '밀준바모카',
     },
     audit: [
       { minutesAgo: 45, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'ACCEPT', detail: '-' },
@@ -250,8 +228,8 @@ const PROFILES: Profile[] = [
       { minutesAgo: 44.5, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'AUTH_OK', detail: '-' },
       { minutesAgo: 44.4, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'COMMAND', detail: 'status' },
       { minutesAgo: 44.3, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'COMMAND', detail: 'players' },
-      { minutesAgo: 38, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'COMMAND', detail: 'broadcast Server restarts in 10 minutes' },
-      { minutesAgo: 34, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'COMMAND', detail: 'kick 76561198100000399 team killing' },
+      { minutesAgo: 38, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'COMMAND', detail: 'broadcast 10분 뒤 서버를 재시작합니다' },
+      { minutesAgo: 34, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'COMMAND', detail: 'kick 76561198100000399 팀킬' },
       { minutesAgo: 25, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'COMMAND', detail: 'changemap Kavkazi Bakurani_KOTH_01 DayLateClear' },
       { minutesAgo: 23, peer: '127.0.0.1:51022', session: '9f3ab1c2', event: 'CLOSE', detail: '-' },
       { minutesAgo: 12, peer: '127.0.0.1:51139', session: 'c41d09aa', event: 'ACCEPT', detail: '-' },
@@ -259,58 +237,8 @@ const PROFILES: Profile[] = [
     ],
     feedHealthy: false,
   },
-  {
-    // Host "test2", port "2" on the sandbox login. It skips ServerSettings.ini.
-    key: 'test2',
-    label: 'test2:2',
-    config: [
-      `[${S_SESSION}]`,
-      'ServerName=Wardogs Test Server [NA-TEST-02]',
-      'ServerImageURL=',
-      'MaxReservedSlots=20',
-      '+DefaultReservedPlayerIds="76561198200000201"',
-      '',
-      `[${S_ENGINE}]`,
-      'MaxPlayers=64',
-      '',
-      `[${S_KOTH}]`,
-      'ScorePeriod=29',
-      '',
-      `[${S_ROTATION}]`,
-      'bEnabled=False',
-      'RotationMode=Random',
-      rotationLine('NorthAmerica', ['Detroit_KOTH_01', 'KOTH_Hardcore'], 'DayEarlyFog'),
-      rotationLine('Kavkazi', ['KOTH_InfantryOnly'], 'DayEndClear'),
-      '',
-    ].join('\r\n'),
-    scoreRates: [0.31, 0.72, 0.5],
-    initialScores: [12, 61, 44],
-    players: [
-      { name: 'Hollowpoint', steamId: '76561198200000101', faction: 'RED', kills: 4, deaths: 12, cash: 1200, ping: 44 },
-      { name: 'Two Time Tony', steamId: '76561198200000102', faction: 'RED', kills: 2, deaths: 9, cash: 800, ping: 112 },
-      { name: 'Silverback', steamId: '76561198200000103', faction: 'BLU', kills: 26, deaths: 3, cash: 11400, ping: 18 },
-      { name: 'Meatgrinder', steamId: '76561198200000104', faction: 'BLU', kills: 21, deaths: 5, cash: 9100, ping: 25 },
-      { name: 'Peppermint', steamId: '76561198200000105', faction: 'BLU', kills: 15, deaths: 7, cash: 6300, ping: 37 },
-      { name: 'Doorkick Doug', steamId: '76561198200000106', faction: 'GRN', kills: 12, deaths: 8, cash: 4900, ping: 61 },
-      { name: 'Anvil', steamId: '76561198200000107', faction: 'GRN', kills: 9, deaths: 9, cash: 3600, ping: 88 },
-      { name: 'unassigned_guy', steamId: '76561198200000108', faction: null, kills: 0, deaths: 0, cash: 0, ping: 52 },
-    ],
-    joiners: ['Sandpaper', 'Grits', 'Mallard', 'Two Sugars', 'Backmarker', 'Cobbler', 'Tin Ribs', 'Hushpuppy', 'Waffle Iron', 'Big Church'],
-    joinerIdBase: 76561198200000401,
-    bans: [{ steamId: '76561198200000301', bannedAtUtc: '2026-08-16 18:02:19Z', bannedBy: 'config', reason: null }],
-    directory: { '76561198200000201': 'Clutchplate', '76561198200000301': 'Sundowner' },
-    audit: [
-      { minutesAgo: 18, peer: '127.0.0.1:44120', session: 'b70e5512', event: 'ACCEPT', detail: '-' },
-      { minutesAgo: 17.9, peer: '127.0.0.1:44120', session: 'b70e5512', event: 'AUTH_OK', detail: '-' },
-      { minutesAgo: 17.5, peer: '127.0.0.1:44120', session: 'b70e5512', event: 'COMMAND', detail: 'status' },
-      { minutesAgo: 9, peer: '127.0.0.1:44120', session: 'b70e5512', event: 'COMMAND', detail: 'broadcast Scrim starts in 5' },
-      { minutesAgo: 4, peer: '127.0.0.1:44120', session: 'b70e5512', event: 'COMMAND', detail: 'restartmatch' },
-    ],
-    feedHealthy: true,
-  },
 ];
 
-// Our own weapon mix for generated kill history; the sandbox has no kill feed.
 const WEAPONS: { cause: string; min: number; max: number; weight: number; tags?: string[] }[] = [
   { cause: 'Id.Item.AK74', min: 5, max: 220, weight: 14 },
   { cause: 'Id.Item.M4A1_Block2', min: 5, max: 240, weight: 14 },
@@ -345,7 +273,6 @@ const sqlTime = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace(
 const revisionOf = (text: string) => `demo${createHash('sha1').update(text).digest('hex').slice(0, 8)}`;
 const utcStamp = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ') + 'Z';
 
-// Names for demo SteamIDs, used by the panel's Steam profile lookups.
 const directory = new Map<string, string>();
 
 export function demoProfiles(ids: string[]): Record<string, { name: string; avatar: string }> {
@@ -380,12 +307,7 @@ interface Sim {
   pingMs: number;
 }
 
-interface Selection {
-  map: string;
-  experiences: string[];
-  lighting: string;
-  alternator: string;
-}
+type Selection = RotationEntry;
 
 interface Ban {
   steamId: string;
@@ -397,11 +319,6 @@ interface Ban {
 type GameEvent = Record<string, unknown> & { eventId: string; type: string };
 type Json = Record<string, any>;
 
-const sameSelection = (a: Selection, b: Selection) => {
-  const key = (v: string) => (!v || v === 'None' ? '' : v);
-  return a.map === b.map && [...a.experiences].sort().join('+') === [...b.experiences].sort().join('+')
-    && key(a.lighting) === key(b.lighting) && key(a.alternator) === key(b.alternator);
-};
 const isDenied = (s: Selection) => !s.experiences.length || s.experiences.some((id) => !EXPERIENCES.some((e) => e.id === id));
 
 class DemoGame {
@@ -430,7 +347,7 @@ class DemoGame {
     this.rng = rng;
     this.config = remapIds(profile.config);
     this.bans = profile.bans.map((b) => ({ ...b, steamId: demoId(b.steamId) }));
-    const joiners = profile.joiners.map((name, i) => ({ name, steamId: demoId(String(profile.joinerIdBase + i)), skill: between(rng, 0.6, 1.4) }));
+    const joiners = profile.joiners.map((name, i) => ({ name, steamId: demoId(String(profile.joinerIdBase + BigInt(i))), skill: between(rng, 0.6, 1.4) }));
     this.roster = [...profile.players.map((p) => ({ name: p.name, steamId: p.steamId && demoId(p.steamId), skill: 0.6 + p.kills / 20 })), ...joiners];
     this.scoreTick = this.configTick();
     this.bootedAt = now - between(rng, 2, 9) * 3600_000;
@@ -443,7 +360,7 @@ class DemoGame {
   }
 
   get serverName() {
-    return getValue(this.config, S_SESSION, 'ServerName') || 'Demo Server';
+    return getValue(this.config, S_SESSION, 'ServerName') || '데모 서버';
   }
 
   get maxPlayers() {
@@ -594,7 +511,6 @@ class DemoGame {
     ];
   }
 
-  // Puts the live match into the exact state the sandbox opens with.
   official(now: number): GameEvent[] {
     this.audit = this.profile.audit.map((e) => ({
       timestampUtc: utcStamp(now - e.minutesAgo * 60_000), peer: e.peer, sessionId: e.session, event: e.event, detail: remapIds(e.detail),
@@ -722,7 +638,6 @@ const ROUTES = [
   'POST /v1/match/restart', 'PUT /v1/world/lighting', 'GET /v1/config', 'PUT /v1/config', 'POST /v1/config/validate', 'GET /v1/sponsor',
 ];
 
-// Answers RCON calls from the simulated game instead of the network, like the sandbox's MockApiClient.
 class DemoRcon extends RconClient {
   game: DemoGame;
 
@@ -784,7 +699,7 @@ class DemoRcon extends RconClient {
     if (player) {
       const id = decodeURIComponent(player[1]!);
       const sim = g.find(id);
-      if (!sim) throw new RconError(404, 'player_not_found', `Player not found: ${id}`);
+      if (!sim) throw new RconError(404, 'player_not_found', `플레이어를 찾을 수 없습니다: ${id}`);
       const name = sim.person.name;
       switch (player[2]) {
         case 'message':
@@ -855,8 +770,8 @@ class DemoRcon extends RconClient {
         const wanted = opts.headers?.['If-Match']?.replace(/"/g, '');
         const revision = revisionOf(g.config);
         if (wanted && wanted !== revision && !opts.query?.force) {
-          throw new RconError(412, 'revision_mismatch', `The config changed since revision ${wanted} (now ${revision}).`,
-            { ok: false, conflict: true, revision, errors: [], error: { message: `The config changed since revision ${wanted} (now ${revision}).` } });
+          throw new RconError(412, 'revision_mismatch', `리비전 ${wanted} 이후 설정이 바뀌었습니다 (현재 ${revision}).`,
+            { ok: false, conflict: true, revision, errors: [], error: { message: `리비전 ${wanted} 이후 설정이 바뀌었습니다 (현재 ${revision}).` } });
         }
         g.config = opts.text ?? g.config;
         g.log(`config -> ${revisionOf(g.config)}`);
@@ -877,7 +792,7 @@ class DemoRcon extends RconClient {
     const g = this.game;
     const max = Number(getValue(g.config, S_SESSION, 'MaxReservedSlots') ?? Infinity);
     if (present && !g.reserved.includes(steamId) && g.reserved.length >= max) {
-      throw new RconError(409, 'reserved_full', `Reserved slots full (${g.reserved.length}/${max}) — raise MaxReservedSlots in ServerSettings.ini.`);
+      throw new RconError(409, 'reserved_full', `예약 슬롯이 가득 찼습니다 (${g.reserved.length}/${max}). ServerSettings.ini에서 MaxReservedSlots를 늘리세요.`);
     }
     g.config = setReservedInDoc(g.config, steamId, present);
     g.log(`reserved ${present ? 'add' : 'remove'} ${steamId}`);
@@ -891,26 +806,26 @@ interface Seeded {
   cash: { matchKey: string | null; points: ReturnType<DemoGame['cashPoint']>[] };
 }
 
-// The sandbox names "joe", "sarah" and "console" as the admins who placed its bans.
 const STAFF = [
-  { steamId: '76561197000009001', name: 'joe' },
-  { steamId: '76561197000009002', name: 'sarah' },
+  { steamId: '76561197000009001', name: '딩동' },
+  { steamId: '76561197000009002', name: '햄버거' },
 ];
 
-function seedServer(store: Store, weapons: WeaponNames, profile: Profile, index: number, now: number): Seeded {
+function seedServer(store: Store, weapons: WeaponLookup, profile: Profile, index: number, now: number): Seeded {
   const rng = mulberry32(20261027 + index);
   const start = now - HISTORY_MS;
   const game = new DemoGame(profile, mulberry32(7 + index), start);
   for (const [id, name] of Object.entries(profile.directory)) directory.set(demoId(id), name);
   for (const p of game.roster) if (p.steamId) directory.set(p.steamId, p.name);
 
-  const row = store.createServer(game.serverName, `${DEMO_PREFIX}${profile.key}`, 'demo', STAFF[0]!.steamId);
+  let row = store.createServer(game.serverName, `${DEMO_PREFIX}${profile.key}`, 'demo', STAFF[0]!.steamId);
+  const joinCode = index ? `demo-${profile.key}` : 'demo';
+  if (!store.servers().some((s) => s.joinCode === joinCode)) row = store.updateServer(row.id, { joinCode }) ?? row;
   const s = store.forServer(row.id);
   const scoreRows: MatchPlayerDelta[] = [];
   let points: Seeded['cash']['points'] = [];
   let pointsKey: string | null = null;
 
-  // One transaction keeps the bulk history write fast on the live DB.
   store.tx(() => {
     store.setMember(row.id, STAFF[1]!.steamId, 'admin', STAFF[0]!.steamId);
     for (const p of game.roster) {
@@ -940,7 +855,6 @@ function seedServer(store: Store, weapons: WeaponNames, profile: Profile, index:
       const events = game.advance(HISTORY_STEP_SEC, t);
       if (events.length) ingest(events, t);
     }
-    // Close the generated history, then open the match the sandbox shows.
     if (feed.matchKey) scoreRows.push(...game.scoreRows(feed.matchKey, officialAt));
     game.current = game.rotation()[0] ?? game.current;
     ingest(game.official(now), now);
@@ -952,66 +866,65 @@ function seedServer(store: Store, weapons: WeaponNames, profile: Profile, index:
   });
   s.addMatchPlayers(scoreRows);
   if (index === 0) {
-    // account_links is global; demo links use demo-only SteamIDs and are filtered per server in /api/links.
     game.roster.filter((p) => p.steamId).slice(0, 8).forEach((p, i) =>
-      store.saveLink(p.steamId!, p.name, `demo-chzzk-${i}`, `${p.name}_치지직`, sqlTime(now - between(rng, 1, 400) * 3600_000)));
+      store.saveLink(p.steamId!, p.name, `demo-chzzk-${i}`, `${p.name}`, sqlTime(now - between(rng, 1, 400) * 3600_000)));
   }
   return { row, game, cash: { matchKey: pointsKey, points } };
 }
 
-// Panel-only features (reports, account links, whitelist) the sandbox has no data for.
 function seedPanelExtras(s: ReturnType<Store['forServer']>, game: DemoGame, rng: Rng, now: number) {
   const byName = (name: string) => game.roster.find((p) => p.name === name)!;
-  const streamers = [byName('Ghostpepper'), byName('Nomad'), byName('QuietStorm')];
+  const streamers = [byName('레드'), byName('은은결아'), byName('솔솔')];
   streamers.forEach((p, i) => {
     s.saveDiscordLink(`10${String(4_000_000_000_000_000 + i * 9_731)}`, `${p.name.toLowerCase()}#${1000 + i}`,
-      { steamId: p.steamId!, steamName: p.name, chzzkChannelId: `demo-chzzk-${i}`, chzzkName: `${p.name}_치지직` }, now - (i + 1) * 30 * 3600_000);
+      { steamId: p.steamId!, steamName: p.name, chzzkChannelId: `demo-chzzk-${i}`, chzzkName: `${p.name}` }, now - (i + 1) * 30 * 3600_000);
     s.markDiscordReserved(p.steamId!, null);
   });
   s.setConfigPresets([
-    { name: 'Scrim', values: { minRequiredPlayers: 20, scorePeriod: 20 }, savedAt: now - 3 * 86400_000, savedBy: 'joe' },
-    { name: 'Public', values: { minRequiredPlayers: 60, scorePeriod: 24 }, savedAt: now - 9 * 86400_000, savedBy: 'sarah' },
+    { name: '스크림', values: { minRequiredPlayers: 20, scorePeriod: 20 }, savedAt: now - 3 * 86400_000, savedBy: '딩동' },
+    { name: '일반', values: { minRequiredPlayers: 60, scorePeriod: 24 }, savedAt: now - 9 * 86400_000, savedBy: '햄버거' },
   ]);
-  s.addPendingBan(demoId('76561198100000399'), 'team killing (repeat)', 'joe');
+  s.addPendingBan(demoId('76561198100000399'), '팀킬 (반복)', '딩동');
 
   const reports = [
-    { target: byName('KillustratorPro'), category: 'cheat', text: 'Headshots through smoke every round. Clip attached.', status: 'open' },
-    { target: byName('T0XIC_AVENGER'), category: 'teamkill', text: 'Ran over three teammates at spawn on purpose.', status: 'open' },
-    { target: byName('Baron von Blam'), category: 'abuse', text: 'Non-stop insults in voice chat.', status: 'resolved', note: 'Warned and kicked' },
-    { target: byName('Sgt. Bricktop'), category: 'grief', text: 'Kept blocking the only exit with a truck.', status: 'rejected', note: 'Footage shows an accident' },
+    { target: byName('이이별뽀이'), category: 'cheat', text: '우랄이 날라다닙니다. 영상 첨부합니다.', status: 'open' },
+    { target: byName('윤하율몽아'), category: 'teamkill', text: '아군 FOB를 고의로 터트렸습니다.', status: 'open' },
+    { target: byName('푸르로서'), category: 'abuse', text: '전체 채팅에서 욕설을 난사합니다.', status: 'resolved', note: '경고 후 킥' },
+    { target: byName('뽀뽀르이'), category: 'grief', text: '계속 의도적으로 팀킬을 합니다.', status: 'rejected', note: '경고' },
   ];
   reports.forEach((r, i) => {
     const reporter = game.roster[(i + 4) % 13]!;
     const created = now - (i * 4 + 1) * 3600_000;
     const rep = s.addReport({
-      createdAt: created, reporterChzzkId: `demo-chzzk-r${i}`, reporterChzzkName: `${reporter.name}_치지직`,
-      reporterSteamId: reporter.steamId, reporterSteamName: reporter.name, targetName: r.target.name, targetSteamId: r.target.steamId,
+      createdAt: created, reporterChzzkId: `demo-chzzk-r${i}`, reporterChzzkName: `${reporter.name}`,
+      reporterSteamId: reporter.steamId, reporterSteamName: reporter.name,
+      reporterDiscordId: null, reporterDiscordName: null, targetName: r.target.name, targetSteamId: r.target.steamId,
       category: r.category, description: r.text, evidenceUrl: i % 2 ? null : 'https://example.com/clip/demo', map: pick(rng, MAPS).id,
     });
-    if (r.status !== 'open') s.updateReport(rep.id, r.status, r.note ?? null, 'sarah', created + 40 * 60_000);
+    if (r.status !== 'open') s.updateReport(rep.id, r.status, r.note ?? null, '햄버거', created + 40 * 60_000);
   });
 }
 
-// The sandbox's audit seed, replayed as panel actions so the panel log tells the same story.
 function seedActions(store: Store, serverId: number, profile: Profile, now: number) {
   const insert = store.prep('INSERT INTO actions (server_id, at, actor, action, target, detail, ok, error) VALUES (?, ?, ?, ?, ?, ?, 1, NULL)');
   for (const e of profile.audit) {
     if (e.event !== 'COMMAND') continue;
     const [cmd, ...rest] = e.detail.split(' ');
     const at = now - e.minutesAgo * 60_000;
-    if (cmd === 'broadcast') insert.run(serverId, at, 'joe', 'broadcast', null, JSON.stringify({ message: rest.join(' ') }));
-    else if (cmd === 'kick') insert.run(serverId, at, 'joe', 'kick', demoId(rest[0]!), JSON.stringify({ reason: rest.slice(1).join(' ') }));
-    else if (cmd === 'changemap') insert.run(serverId, at, 'joe', 'change_map', rest[0]!, JSON.stringify({ map: rest[0], lighting: rest[2] }));
-    else if (cmd === 'restartmatch') insert.run(serverId, at, 'joe', 'restart_match', null, null);
+    if (cmd === 'broadcast') insert.run(serverId, at, '딩동', 'broadcast', null, JSON.stringify({ message: rest.join(' ') }));
+    else if (cmd === 'kick') insert.run(serverId, at, '딩동', 'kick', demoId(rest[0]!), JSON.stringify({ reason: rest.slice(1).join(' ') }));
+    else if (cmd === 'changemap') insert.run(serverId, at, '딩동', 'change_map', rest[0]!, JSON.stringify({ map: rest[0], lighting: rest[2] }));
+    else if (cmd === 'restartmatch') insert.run(serverId, at, '딩동', 'restart_match', null, null);
   }
 }
 
-export function createDemo(store: Store, weapons: WeaponNames) {
+export function createDemo(store: Store, weapons: WeaponLookup) {
   const games = new Map<number, DemoGame>();
   let seeded: Seeded[] = [];
 
   const build = () => {
     for (const row of store.servers()) if (isDemoUrl(row.rconUrl)) store.deleteServer(row.id);
+    store.prep("DELETE FROM account_links WHERE chzzk_channel_id LIKE 'demo-chzzk-%'").run();
     const t0 = performance.now();
     const now = Date.now();
     for (const s of STAFF) store.touchUser(s.steamId, s.name, null, true);

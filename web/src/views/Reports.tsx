@@ -1,14 +1,41 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Report } from '../lib/types.ts';
 import { can, useStore } from '../lib/store.ts';
-import { api, run, errorMessage } from '../lib/api.ts';
-import { modal } from '../lib/modal.tsx';
+import { api, run, errorMessage, scoped } from '../lib/api.ts';
+import { modal, openDialog, Overlay } from '../lib/modal.tsx';
 import { fmtDateTime } from '../lib/format.ts';
 import { Card, PageActions, Empty, useOnAction } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
 import { SortTable } from '../components/sortTable.tsx';
 import { IconButton } from '../components/iconButton.tsx';
 import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
+import { openPlayerById } from '../components/playerDialog.tsx';
+import { PlayerName } from '../components/playerName.tsx';
+
+function showImage(reportId: number, images: number[], start: number) {
+  openDialog((close) => <ImageViewer reportId={reportId} images={images} start={start} close={close} />);
+}
+
+function ImageViewer({ reportId, images, start, close }: { reportId: number; images: number[]; start: number; close: () => void }) {
+  const [i, setI] = useState(start);
+  const src = scoped(`/api/reports/${reportId}/images/${images[i]}`);
+  return (
+    <Overlay label="첨부 이미지" wide onClose={close}>
+      <div className="row-between">
+        <h2>{`신고 #${reportId} 첨부 이미지 ${i + 1}/${images.length}`}</h2>
+        <button className="btn btn-ghost" type="button" onClick={close}>닫기</button>
+      </div>
+      <img className="img-full" src={src} alt={`첨부 이미지 ${i + 1}`} />
+      {images.length > 1 ? (
+        <div className="row-wrap">
+          <button className="btn btn-sm" type="button" disabled={i === 0} onClick={() => setI(i - 1)}>이전</button>
+          <button className="btn btn-sm" type="button" disabled={i === images.length - 1} onClick={() => setI(i + 1)}>다음</button>
+          <a className="btn btn-sm toolbar-end" href={src} target="_blank" rel="noopener noreferrer">원본 열기</a>
+        </div>
+      ) : <div className="row-wrap"><a className="btn btn-sm toolbar-end" href={src} target="_blank" rel="noopener noreferrer">원본 열기</a></div>}
+    </Overlay>
+  );
+}
 
 const STATUS_LABEL: Record<string, string> = { open: '접수', resolved: '처리 완료', rejected: '반려' };
 const FILTERS = [['all', '전체'], ...Object.entries(STATUS_LABEL)];
@@ -81,7 +108,7 @@ export default function Reports() {
               ) },
               { key: 'target', label: '대상', sort: (r) => r.targetName, className: 'nowrap', render: (r) => (
                 <>
-                  {r.targetName}
+                  <PlayerName steamId={r.targetSteamId} name={r.targetName} />
                   <div className="mono small muted">{r.targetSteamId ?? 'SteamID 모름'}</div>
                 </>
               ) },
@@ -90,15 +117,31 @@ export default function Reports() {
                 <>
                   <div className="report-desc">{r.description}</div>
                   {r.evidenceUrl ? <a className="link" href={r.evidenceUrl} target="_blank" rel="noopener noreferrer">증거 링크</a> : null}
+                  {r.images?.length ? (
+                    <div className="thumbs">
+                      {r.images.map((img, i) => (
+                        <button key={img} type="button" className="thumb-btn" aria-label={`첨부 이미지 ${i + 1} 크게 보기`} onClick={() => showImage(r.id, r.images, i)}>
+                          <img className="thumb" src={scoped(`/api/reports/${r.id}/images/${img}`)} alt="" loading="lazy" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </>
               ) },
-              { key: 'reporter', label: '신고자', sort: (r) => r.reporterChzzkName ?? r.reporterSteamName ?? r.reporterSteamId, className: 'small nowrap', render: (r) => (
+              { key: 'reporter', label: '신고자', sort: (r) => r.reporterSteamName ?? r.reporterSteamId ?? r.reporterDiscordName, className: 'small nowrap', render: (r) => (r.reporterSteamId || r.reporterDiscordId ? (
                 <>
-                  {r.reporterChzzkName ? <div>{`${r.reporterChzzkName} (치지직)`}</div> : null}
-                  {r.reporterSteamName ? <div>{`${r.reporterSteamName} (스팀)`}</div> : null}
-                  {r.reporterSteamId ? <div className="mono muted">{r.reporterSteamId}</div> : null}
+                  {r.reporterSteamId ? (
+                    <button type="button" className="tag tag-steam" title={`${r.reporterSteamId} · 플레이어 관리 열기`}
+                      onClick={() => openPlayerById(r.reporterSteamId!, {
+                        name: r.reporterSteamName,
+                        link: r.reporterChzzkId ? { steamId: r.reporterSteamId!, steamName: r.reporterSteamName, chzzkChannelId: r.reporterChzzkId, chzzkName: r.reporterChzzkName, linkedAt: null } : null,
+                      })}>{r.reporterSteamName || r.reporterSteamId}</button>
+                  ) : null}
+                  {r.reporterDiscordId ? (
+                    <div><PlayerName className="tag tag-discord" steamId={r.reporterSteamId} name={r.reporterSteamName}>{r.reporterDiscordName || r.reporterDiscordId}</PlayerName></div>
+                  ) : null}
                 </>
-              ) },
+              ) : <span className="muted">—</span>) },
               { key: 'status', label: '상태', sort: (r) => STATUS_LABEL[r.status] ?? r.status, className: 'small nowrap', render: (r) => (
                 <>
                   <span className={r.status === 'open' ? 'tag tag-danger' : 'tag'}>{STATUS_LABEL[r.status] ?? r.status}</span>

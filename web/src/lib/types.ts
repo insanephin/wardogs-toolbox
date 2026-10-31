@@ -77,6 +77,7 @@ export interface Player {
   pingMs: number;
   joinedAt: number | null;
   link: Link | null;
+  subscriber: boolean;
   streamer: Streamer | null;
   avatar: string | null;
 }
@@ -228,6 +229,7 @@ export interface FeedEvent extends Partial<Omit<Kill, 'receivedAt'>> {
   receivedAt: number;
   mapName?: string;
   playerName?: string;
+  steamId?: string;
   players?: number;
   state?: string;
   winningFaction?: string;
@@ -280,10 +282,21 @@ export interface WhitelistBan {
 
 export type WhitelistMode = 'off' | 'kick' | 'ban';
 
+export interface ChzzkOwner {
+  channelId: string;
+  channelName: string;
+  connectedAt: number;
+  syncedAt: number | null;
+  count: number;
+  error: string | null;
+}
+
 export interface Whitelist {
   mode: WhitelistMode;
   message: string;
+  subscribers: boolean;
   bans: WhitelistBan[];
+  owner: ChzzkOwner | null;
 }
 
 export interface CatalogItem {
@@ -405,11 +418,14 @@ export interface WeaponStat {
 
 export interface Report {
   id: number;
+  images: number[];
   createdAt: number;
   reporterChzzkId: string | null;
   reporterChzzkName: string | null;
   reporterSteamId: string | null;
   reporterSteamName: string | null;
+  reporterDiscordId: string | null;
+  reporterDiscordName: string | null;
   targetName: string;
   targetSteamId: string | null;
   category: string;

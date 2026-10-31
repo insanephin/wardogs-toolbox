@@ -12,12 +12,25 @@ interface LinkState {
   steam: string | null;
   link: Link | null;
   joins: { id: number; name: string; url: string }[];
-  server: { name: string; joinCode: string } | null;
+  server: ServerInfo | null;
+  access: 'ok' | 'link' | 'subscribe' | null;
+}
+
+type EntryRule = 'open' | 'linked' | 'subscribers';
+interface ServerInfo {
+  name: string;
+  joinCode: string;
+  online: boolean;
+  players: number;
+  maxPlayers: number | null;
+  map: string | null;
+  rule: EntryRule;
+  channel: string | null;
 }
 
 const STEPS: { id: Provider; label: string }[] = [
-  { id: 'chzzk', label: '치지직' },
   { id: 'steam', label: '스팀' },
+  { id: 'chzzk', label: '치지직' },
 ];
 
 function discordResultText(r: string, via: string): { ok: boolean; text: string } {
@@ -74,53 +87,87 @@ export default function LinkPage({ code, onServer }: { code: string | null; onSe
     );
   }
   const shown = (p: Provider) => st?.[p] ?? (p === 'chzzk' ? link?.chzzkName : link?.steamName) ?? null;
+  const server = st?.server ?? null;
+  const reportHref = `${code ? `/${encodeURIComponent(code)}` : ''}/report`;
 
   return (
     <>
+      {server ? <ServerHead server={server} /> : null}
       {notice ? <div className={`banner ${notice.ok ? 'banner-ok' : 'banner-error'}`} role="status">{notice.text}</div> : null}
       {error ? <div className="banner banner-error" role="alert">{error}</div> : null}
 
-      <div className="notice-box">
-        <strong>로그인 전 확인하세요</strong>
-        <ul>
-          <li>이 페이지는 <b>일반 시청자용</b>입니다. 화이트리스트는 디스코드에서 스팀 로그인으로 등록하세요.</li>
-          <li>스팀은 <b>워독스를 보유한 계정</b>으로 로그인하세요.</li>
-          <li>한 번 등록하면 <b>직접 해제하거나 다른 계정으로 바꿀 수 없습니다.</b></li>
-          <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href={`${code ? `/${encodeURIComponent(code)}` : ''}/report`} onClick={followLink}>신고하기</a>로 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
-        </ul>
-      </div>
-
       {!st ? <p className="empty"><Spinner /></p> : (
         <>
-          <ol className="link-steps">
-            {STEPS.map(({ id, label }, i) => {
-              const name = shown(id);
-              return (
-                <li key={id} className="link-step">
-                  <span className="link-step-label">{`${i + 1}. ${label}`}</span>
-                  <span className="link-step-name muted small" title={name ?? undefined}>{name ?? '로그인 필요'}</span>
-                  {!st.configured[id] ? <span className="link-step-status muted small">준비 중</span>
-                    : link ? <span className="link-step-status ok-text small">연동됨</span>
-                    : st[id] ? <span className="link-step-status ok-text small">확인됨</span>
-                      : <a className="btn btn-sm btn-block btn-primary" href={`/auth/${id}${code ? `?${new URLSearchParams({ s: code })}` : ''}`}>로그인</a>}
-                </li>
-              );
-            })}
-          </ol>
-          {link ? (
-            <>
-              <p className="public-lead small">{`${fmtTime(link.linkedAt)}에 등록되었습니다.`}</p>
-              {st.joins.length ? st.joins.map((j) => (
-                <a key={j.id} className="btn btn-block btn-primary" href={j.url} target="_blank" rel="noopener noreferrer">
-                  {st.joins.length > 1 ? `${j.name} 접속` : '서버 접속'}
-                </a>
-              )) : <p className="public-lead small">지금은 서버에 접속할 수 없습니다.</p>}
-            </>
-          ) : st.chzzk || st.steam ? (
-            <p className="public-lead small">{`${st.chzzk ? '스팀' : '치지직'}에도 로그인하면 연동이 완료됩니다.`}</p>
+          {st.access === 'ok' && server?.rule !== 'open' ? <div className="banner banner-ok" role="status">입장할 수 있습니다.</div> : null}
+          {st.access === 'subscribe' ? (
+            <div className="banner banner-warn" role="status">
+              {`치지직 ${server?.channel ?? '스트리머'} 채널 구독자만 입장할 수 있습니다. 구독하면 3분 안에 반영됩니다.`}
+            </div>
           ) : null}
+
+          {link || server?.rule === 'open' ? null : (
+            <div className="notice-box">
+              <strong>로그인 전 확인하세요</strong>
+              <ul>
+                <li>이 페이지는 <b>일반 플레이어용</b>입니다. 스트리머 화이트리스트는 디스코드에서 등록하세요.</li>
+                <li>스팀은 <b>워독스를 보유한 계정</b>으로 로그인하세요.</li>
+                <li>한 번 등록하면 <b>직접 해제하거나 다른 계정으로 바꿀 수 없습니다.</b></li>
+                <li>게임이 없는 계정에 잘못 등록한 경우처럼 특수한 경우에만, <a href={reportHref} onClick={followLink}>신고하기</a>로 본인 닉네임과 사유를 적어 요청하면 관리자가 확인 후 해제합니다.</li>
+              </ul>
+            </div>
+          )}
+
+          {server?.rule === 'open' && !link ? null : (
+            <section className="public-section">
+              <h2>계정 연동</h2>
+              <ol className="link-steps">
+                {STEPS.map(({ id, label }, i) => {
+                  const name = shown(id);
+                  return (
+                    <li key={id} className="link-step">
+                      <span className="link-step-label">{`${i + 1}. ${label}`}</span>
+                      <span className="link-step-name muted small" title={name ?? undefined}>{name ?? '로그인 필요'}</span>
+                      {!st.configured[id] ? <span className="link-step-status muted small">준비 중</span>
+                        : link ? <span className="link-step-status ok-text small">연동됨</span>
+                        : st[id] ? <span className="link-step-status ok-text small">확인됨</span>
+                          : <a className="btn btn-sm btn-block btn-primary" href={`/auth/${id}${code ? `?${new URLSearchParams({ s: code })}` : ''}`}>로그인</a>}
+                    </li>
+                  );
+                })}
+              </ol>
+              {link ? <p className="public-lead small">{`${fmtTime(link.linkedAt)}에 등록되었습니다.`}</p>
+                : st.chzzk || st.steam ? <p className="public-lead small">{`${st.chzzk ? '스팀' : '치지직'}에도 로그인하면 연동이 완료됩니다.`}</p>
+                : null}
+            </section>
+          )}
+
+          {st.joins.map((j) => (
+            <a key={j.id} className="btn btn-block btn-primary" href={j.url} target="_blank" rel="noopener noreferrer">
+              {st.joins.length > 1 ? `${j.name} 접속` : '서버 접속'}
+            </a>
+          ))}
+          {link && !st.joins.length && st.access !== 'subscribe' ? <p className="public-lead small">지금은 서버에 접속할 수 없습니다.</p> : null}
+
         </>
       )}
     </>
+  );
+}
+
+const RULE_LABEL: Record<EntryRule, string> = { open: '누구나 입장', linked: '계정 연동 필요', subscribers: '연동 + 구독 필요' };
+
+function ServerHead({ server }: { server: ServerInfo }) {
+  const players = server.maxPlayers ? `${server.players}/${server.maxPlayers}명` : `${server.players}명`;
+  return (
+    <div className="server-head">
+      <p className={`conn ${server.online ? 'conn-up' : ''}`}>
+        <span className="dot" aria-hidden="true" />
+        {server.online ? [players, server.map].filter(Boolean).join(' · ') : '오프라인'}
+      </p>
+      <p className="server-rule small">
+        <span className="tag">{RULE_LABEL[server.rule]}</span>
+        {server.rule === 'subscribers' && server.channel ? <span className="tag tag-chzzk">{server.channel}</span> : null}
+      </p>
+    </div>
   );
 }

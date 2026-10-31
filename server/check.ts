@@ -3,6 +3,7 @@ import { RconClient } from './rcon.ts';
 import type { RconError } from './rcon.ts';
 import { parseSuperadmins } from './auth.ts';
 import { Store } from './store.ts';
+import { connectKv } from './kv.ts';
 import { existsSync } from 'node:fs';
 
 const config = loadConfig();
@@ -26,7 +27,14 @@ try {
 } catch (err) {
   bad((err as Error).message);
 }
-const servers = existsSync(config.dbPath) ? new Store(config.dbPath, { legacyFeedToken: config.feedToken }).servers() : [];
+try {
+  const kv = await connectKv(config);
+  await kv.close();
+  ok(`Redis ${config.redis.host}:${config.redis.port} db${config.redis.db} 연결`);
+} catch (err) {
+  bad(`Redis에 연결하지 못했습니다: ${(err as Error).message}`, 'REDIS_HOST(필요하면 REDIS_PORT·REDIS_PASSWORD·REDIS_DB)를 확인하세요');
+}
+const servers = existsSync(config.dbPath) ? new Store(config.dbPath, { legacyFeedToken: config.feedToken, secretKey: config.dbSecretKey }).servers() : [];
 if (!servers.length) warn("등록된 게임 서버가 없습니다. 관리자 패널 '서버 관리'에서 추가하세요");
 
 for (const server of servers) {

@@ -1,13 +1,12 @@
 import asyncio, logging, time
-from typing import Callable
-from aiohttp import ClientResponseError
+from collections.abc import Callable
 from discord import Interaction
 from discord.ui import LayoutView
 from discord.ext import commands
 from configparser import ConfigParser
 from utils.models import TicketState
-from utils.view import ErrorView, VerifyView, DoneView
-from utils.http import DashboardClient
+from utils.view import ErrorView, VerifyView, DoneView, SERVER_DELETED
+from utils.http import DashboardClient, DashboardError
 
 
 logger = logging.getLogger(__name__)
@@ -25,22 +24,22 @@ class Verify(commands.Cog):
     async def cog_unload(self):
         await self.client.close()
 
-    async def _guard(self, interaction: Interaction) -> bool:
+    async def guard(self, interaction: Interaction) -> bool:
         if self.guild_id and interaction.guild_id != self.guild_id:
             await interaction.response.send_message(view=ErrorView("이 디스코드 서버에서는 인증할 수 없습니다."), ephemeral=True)
             return False
         return True
 
     async def start_streamer(self, interaction: Interaction, server_id: int | None):
-        if not await self._guard(interaction):
+        if not await self.guard(interaction):
             return
         if server_id is None:
-            return await interaction.response.send_message(view=ErrorView("오래된 패널입니다. 관리자에게 `/패널`로 새 패널을 올려달라고 요청해주세요."), ephemeral=True)
+            return await interaction.response.send_message(view=ErrorView("오래된 패널입니다. 관리자에게 문의해주세요."), ephemeral=True)
         try:
             ticket = await self.client.create_ticket(server_id, interaction.user.id, interaction.user.display_name)
-        except Exception as e:
-            if isinstance(e, ClientResponseError) and e.status == 404:
-                return await interaction.response.send_message(view=ErrorView("이 패널의 서버가 삭제되었습니다. 관리자에게 문의해주세요."), ephemeral=True)
+        except DashboardError as e:
+            return await interaction.response.send_message(view=ErrorView(SERVER_DELETED if e.status == 404 else e.message), ephemeral=True)
+        except Exception:
             logger.error("Failed to create verify ticket", exc_info=True)
             return await interaction.response.send_message(view=ErrorView("지금은 인증 서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요."), ephemeral=True)
 

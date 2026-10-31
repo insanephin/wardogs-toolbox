@@ -138,7 +138,7 @@ export function setReservedInDoc(text: string, steamId: string, present: boolean
   return setArray(text, SESSION_SECTION, RESERVED_KEY, present ? [...ids, steamId] : ids.filter((id) => id !== steamId));
 }
 
-interface RotationEntry {
+export interface RotationEntry {
   map: string;
   experiences: string[];
   lighting: string;

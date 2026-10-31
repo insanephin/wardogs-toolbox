@@ -1,17 +1,19 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Config } from './config.ts';
-import type { Store, Link } from './store.ts';
+import type { Store, Link, DiscordGuild } from './store.ts';
 import { HttpError, parseCookies } from './http.ts';
 import type { Router } from './http.ts';
+import { DISCORD_BOT_PERMISSIONS, botInstallConfigured } from './discord.ts';
 import type { Discord, VerifyResult } from './discord.ts';
+import type { Kv } from './kv.ts';
+import { chzzkToken, chzzkMe, chzzkRevoke } from './chzzk.ts';
+import type { ChzzkToken } from './chzzk.ts';
 
 const COOKIE = 'wd_link';
 const SESSION_TTL_MS = 3600_000;
 const STATE_TTL_MS = 10 * 60_000;
 const TIMEOUT_MS = 10_000;
-const MAX_ENTRIES = 10_000;
-const CHZZK_API = 'https://openapi.chzzk.naver.com';
 const DISCORD_API = 'https://discord.com/api/v10';
 const TWITCH_ID = 'https://id.twitch.tv/oauth2';
 const STEAM_OPENID = 'https://steamcommunity.com/openid/login';
@@ -20,7 +22,7 @@ const STEAM_SELECT = 'http://specs.openid.net/auth/2.0/identifier_select';
 const STEAM_CLAIMED_ID = /^https:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/;
 const JOIN_URL = 'https://wardogserverlist.com/join';
 
-export const PROVIDERS = ['steam', 'chzzk', 'discord', 'twitch'] as const;
+const PROVIDERS = ['steam', 'chzzk', 'discord', 'twitch'] as const;
 export type Provider = (typeof PROVIDERS)[number];
 type PublicProvider = 'chzzk' | 'steam';
 export type PanelResult = 'linked' | 'denied' | 'unlinked' | 'taken' | 'cancelled' | 'expired' | 'failed' | 'unconfigured';
@@ -32,14 +34,16 @@ export interface Account {
   avatar?: string;
 }
 
-type Purpose = 'link' | 'admin' | 'identity' | 'report' | 'discord';
+type Purpose = 'link' | 'admin' | 'identity' | 'report' | 'discord' | 'owner' | 'bot';
 
 interface AdminLogin {
-  allowed(req: IncomingMessage): boolean;
   sessionOf(req: IncomingMessage): string | undefined;
   login(provider: Provider, account: Account, previous: string | undefined): { result: PanelResult; cookie: string | null };
   identity(provider: Provider, account: Account, panelSid: string | undefined): PanelResult;
   proven(provider: PublicProvider, account: Account, previous: string | undefined): string | null;
+  canManage(panelSid: string | undefined, serverId: number): boolean;
+  chzzkOwner(panelSid: string | undefined, serverId: number, token: ChzzkToken, channel: Account): Promise<PanelResult>;
+  discordGuild(panelSid: string | undefined, serverId: number, guild: DiscordGuild): PanelResult;
 }
 
 interface Session {
@@ -55,6 +59,7 @@ interface Pending {
   panelSid?: string;
   ticket?: string;
   code?: string;
+  serverId?: number;
   expires: number;
 }
 
@@ -72,9 +77,8 @@ async function json(url: string, init: RequestInit = {}): Promise<any> {
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
-function makeRoom<K, V>(map: Map<K, V>): void {
-  while (map.size >= MAX_ENTRIES) map.delete(map.keys().next().value as K);
-}
+const sessionKey = (sid: string) => `link:session:${sid}`;
+const stateKey = (state: string) => `link:state:${state}`;
 
 export const sqlNow = () => new Date().toISOString().slice(0, 23).replace('T', ' ');
 
@@ -83,53 +87,52 @@ export interface PublicServer {
   name: string;
   joinCode: string | null;
   public: boolean;
+  demo: boolean;
+  status(): { online: boolean; players: number; maxPlayers: number | null; map: string | null };
+  entry(): { rule: EntryRule; channel: string | null };
+  passes(link: Link): boolean;
 }
+
+type EntryRule = 'open' | 'linked' | 'subscribers';
 
 export const joinUrl = (code: string) => `${JOIN_URL}?${new URLSearchParams({ key: `id|${code}` })}`;
 
-export function createLinking(config: Config, store: Store, admin: AdminLogin, servers: () => PublicServer[], discord: Discord) {
-  const sessions = new Map<string, Session>();
-  const pending = new Map<string, Pending>();
+export function createLinking(config: Config, store: Store, kv: Kv, admin: AdminLogin, servers: () => PublicServer[], discord: Discord) {
   const configured: Record<Provider, boolean> = {
     chzzk: !!(config.chzzk.clientId && config.chzzk.clientSecret && config.chzzk.redirectUrl),
     steam: !!(config.steam.apiKey && config.steam.returnUrl),
     discord: !!(config.discord.clientId && config.discord.clientSecret && config.discord.redirectUrl),
     twitch: !!(config.twitch.clientId && config.twitch.clientSecret && config.twitch.redirectUrl),
   };
+  const botConfigured = botInstallConfigured(config);
 
   const cookie = (value: string, maxAge: number) =>
     `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${config.cookieSecure ? '; Secure' : ''}`;
 
   const sidOf = (req: IncomingMessage) => parseCookies(req.headers.cookie)[COOKIE];
 
-  function session(req: IncomingMessage): Session | null {
+  async function session(req: IncomingMessage): Promise<Session | null> {
     const sid = sidOf(req);
-    const s = sid ? sessions.get(sid) : undefined;
-    if (!s) return null;
-    if (s.expires < Date.now()) {
-      sessions.delete(sid!);
-      return null;
-    }
-    return s;
+    const s = sid ? await kv.get<Session>(sessionKey(sid)) : null;
+    return s && s.expires > Date.now() ? s : null;
   }
 
-  function newState(provider: Provider, purpose: Purpose, sid: string, panelSid: string | undefined, ticket?: string, code?: string): string {
-    const now = Date.now();
-    for (const [k, p] of pending) {
-      if (p.expires < now || (p.sid === sid && p.provider === provider)) pending.delete(k);
-    }
-    makeRoom(pending);
+  const saveSession = (sid: string, s: Session) => kv.set(sessionKey(sid), s, s.expires - Date.now());
+
+  async function newState(provider: Provider, purpose: Purpose, sid: string, panelSid: string | undefined, ticket?: string, code?: string, serverId?: number): Promise<string> {
     const state = randomBytes(24).toString('base64url');
-    pending.set(state, { provider, purpose, sid, panelSid, ticket, code, expires: now + STATE_TTL_MS });
+    await kv.set(stateKey(state), { provider, purpose, sid, panelSid, ticket, code, serverId, expires: Date.now() + STATE_TTL_MS } satisfies Pending, STATE_TTL_MS);
     return state;
   }
 
-  function takeState(state: string | null, provider: Provider, req: IncomingMessage): { s: Session; panelSid: string | undefined; ticket?: string } {
-    const p = pending.get(state ?? '');
-    if (state) pending.delete(state);
-    const s = session(req);
-    if (!p || !s || p.provider !== provider || p.expires < Date.now() || p.sid !== sidOf(req)) throw new LinkError('expired');
-    return { s, panelSid: p.panelSid, ticket: p.ticket };
+  const peekState = (state: string | null) => (state ? kv.get<Pending>(stateKey(state)) : Promise.resolve(null));
+
+  async function takeState(state: string | null, provider: Provider, req: IncomingMessage): Promise<{ sid: string; s: Session; panelSid: string | undefined; ticket?: string; serverId?: number }> {
+    const p = state ? await kv.take<Pending>(stateKey(state)) : null;
+    const sid = sidOf(req);
+    const s = await session(req);
+    if (!p || !s || !sid || p.provider !== provider || p.expires < Date.now() || p.sid !== sid) throw new LinkError('expired');
+    return { sid, s, panelSid: p.panelSid, ticket: p.ticket, serverId: p.serverId };
   }
 
   function redirect(res: ServerResponse, location: string, setCookie?: string | null) {
@@ -150,34 +153,31 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
     redirect(res, result === 'linked' ? '/panel' : `/panel?${new URLSearchParams({ login: result, p: provider })}`, setCookie);
   const backIdentity = (res: ServerResponse, provider: Provider, result: PanelResult) =>
     redirect(res, `/panel?${new URLSearchParams({ identity: result, p: provider })}#account`);
+  const backOwner = (res: ServerResponse, result: PanelResult) =>
+    redirect(res, `/panel?${new URLSearchParams({ owner: result })}#links`);
+  const backBot = (res: ServerResponse, result: PanelResult) =>
+    redirect(res, `/panel?${new URLSearchParams({ discord: result })}#server`);
   const backDiscord = (res: ServerResponse, result: Result, via: Provider) =>
     redirect(res, `/?${new URLSearchParams({ r: result, p: 'discord', via })}`);
 
-  async function chzzkAccount(url: URL, state: string): Promise<Account> {
+  async function chzzkLogin(url: URL, state: string): Promise<{ token: ChzzkToken; account: Account }> {
     const code = url.searchParams.get('code');
     if (!code) throw new LinkError('cancelled');
-    const c = config.chzzk;
-    const token = await json(`${CHZZK_API}/auth/v1/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grantType: 'authorization_code', clientId: c.clientId, clientSecret: c.clientSecret, code, state }),
+    const token = await chzzkToken(config, code, state).catch((err) => {
+      throw new LinkError('failed', err instanceof Error ? err.message : String(err));
     });
-    const access = token.body?.code === 200 ? token.body.content?.accessToken : null;
-    if (!access) throw new LinkError('failed', `chzzk token ${JSON.stringify(token.body)}`);
-    let me;
     try {
-      me = await json(`${CHZZK_API}/open/v1/users/me`, { headers: { Authorization: `Bearer ${access}` } });
-    } finally {
-      fetch(`${CHZZK_API}/auth/v1/token/revoke`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: c.clientId, clientSecret: c.clientSecret, token: access, tokenTypeHint: 'access_token' }),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      }).catch(() => {});
+      return { token, account: await chzzkMe(token.accessToken) };
+    } catch (err) {
+      chzzkRevoke(config, token.accessToken, 'access_token');
+      throw new LinkError('failed', err instanceof Error ? err.message : String(err));
     }
-    const u = me.body?.code === 200 ? me.body.content : null;
-    if (!u?.channelId) throw new LinkError('failed', `chzzk users/me ${JSON.stringify(me.body)}`);
-    return { id: u.channelId, name: u.channelName };
+  }
+
+  async function chzzkAccount(url: URL, state: string): Promise<Account> {
+    const { token, account } = await chzzkLogin(url, state);
+    chzzkRevoke(config, token.accessToken, 'access_token');
+    return account;
   }
 
   async function oauthCode(url: URL, tokenUrl: string, c: { clientId: string; clientSecret: string; redirectUrl: string }): Promise<string> {
@@ -268,7 +268,13 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
     return steamAccount(url);
   };
 
-  function authorizeUrl(provider: Provider, state: string): string {
+  function authorizeUrl(provider: Provider, purpose: Purpose, state: string): string {
+    if (purpose === 'bot') {
+      return `https://discord.com/oauth2/authorize?${new URLSearchParams({
+        client_id: config.discord.botClientId, redirect_uri: config.discord.botRedirectUrl, response_type: 'code',
+        scope: 'bot applications.commands', permissions: DISCORD_BOT_PERMISSIONS, integration_type: '0', state,
+      })}`;
+    }
     if (provider === 'steam') return steamAuthorizeUrl(state);
     if (provider === 'chzzk') {
       return `https://chzzk.naver.com/account-interlock?${new URLSearchParams({ clientId: config.chzzk.clientId, redirectUri: config.chzzk.redirectUrl, state })}`;
@@ -283,26 +289,22 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
     })}`;
   }
 
-  function start(provider: Provider, purpose: Purpose, req: IncomingMessage, res: ServerResponse, ticket?: string, code?: string) {
+  async function start(provider: Provider, purpose: Purpose, req: IncomingMessage, res: ServerResponse, ticket?: string, code?: string, serverId?: number) {
     let sid = sidOf(req);
     let setCookie: string | undefined;
-    if (!sid || !session(req)) {
-      const now = Date.now();
-      for (const [k, s] of sessions) if (s.expires < now) sessions.delete(k);
-      makeRoom(sessions);
+    if (!sid || !(await session(req))) {
       sid = randomBytes(32).toString('base64url');
-      sessions.set(sid, { expires: Date.now() + SESSION_TTL_MS });
+      await saveSession(sid, { expires: Date.now() + SESSION_TTL_MS });
       setCookie = cookie(sid, SESSION_TTL_MS / 1000);
     }
-    const state = newState(provider, purpose, sid, admin.sessionOf(req), ticket, code);
-    redirect(res, authorizeUrl(provider, state), setCookie);
+    const state = await newState(provider, purpose, sid, admin.sessionOf(req), ticket, code, serverId);
+    redirect(res, authorizeUrl(provider, purpose, state), setCookie);
   }
 
   async function adminCallback(provider: Provider, url: URL, state: string | null, req: IncomingMessage, res: ServerResponse) {
     try {
-      const { panelSid } = takeState(state, provider, req);
+      const { panelSid } = await takeState(state, provider, req);
       const account = await accountOf(provider, url, state);
-      if (!admin.allowed(req)) return backAdmin(res, provider, 'denied');
       const r = admin.login(provider, account, panelSid);
       if (r.result !== 'linked') console.warn(`[관리자] 로그인 거부(${r.result}): ${provider} ${account.name} (${account.id})`);
       else console.log(`[관리자] 로그인: ${provider} ${account.name} (${account.id})`);
@@ -316,7 +318,7 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
 
   async function identityCallback(provider: Provider, url: URL, state: string | null, req: IncomingMessage, res: ServerResponse) {
     try {
-      const { panelSid } = takeState(state, provider, req);
+      const { panelSid } = await takeState(state, provider, req);
       const account = await accountOf(provider, url, state);
       backIdentity(res, provider, admin.identity(provider, account, panelSid));
     } catch (err) {
@@ -326,9 +328,54 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
     }
   }
 
+  async function ownerCallback(url: URL, state: string | null, req: IncomingMessage, res: ServerResponse) {
+    try {
+      const { panelSid, serverId } = await takeState(state, 'chzzk', req);
+      const { token, account } = await chzzkLogin(url, state!);
+      const result = await admin.chzzkOwner(panelSid, serverId!, token, account);
+      if (result !== 'linked') chzzkRevoke(config, token.refreshToken, 'refresh_token');
+      backOwner(res, result);
+    } catch (err) {
+      const result = err instanceof LinkError ? err.result as PanelResult : 'failed';
+      if (result === 'failed') console.error('[치지직] 스트리머 연결 실패:', err instanceof Error ? err.message : err);
+      backOwner(res, result);
+    }
+  }
+
+  async function botCallback(url: URL, state: string | null, req: IncomingMessage, res: ServerResponse) {
+    try {
+      const { panelSid, serverId } = await takeState(state, 'discord', req);
+      const c = config.discord;
+      if (url.searchParams.get('error') === 'access_denied') throw new LinkError('cancelled');
+      const code = url.searchParams.get('code');
+      if (!code) throw new LinkError('cancelled');
+      const token = await json(`${DISCORD_API}/oauth2/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: c.botClientId, client_secret: c.botClientSecret, grant_type: 'authorization_code', code, redirect_uri: c.botRedirectUrl }),
+      });
+      const access = token.body?.access_token;
+      if (access) {
+        fetch(`${DISCORD_API}/oauth2/token/revoke`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ client_id: c.botClientId, client_secret: c.botClientSecret, token: access }),
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        }).catch(() => {});
+      }
+      const guild = token.body?.guild;
+      if (!guild?.id) throw new LinkError('failed', `discord bot token ${token.status} ${JSON.stringify(token.body)}`);
+      backBot(res, admin.discordGuild(panelSid, serverId!, { id: String(guild.id), name: String(guild.name ?? guild.id) }));
+    } catch (err) {
+      const result = err instanceof LinkError ? err.result as PanelResult : 'failed';
+      if (result === 'failed') console.error('[디스코드] 봇 추가 실패:', err instanceof Error ? err.message : err);
+      backBot(res, result);
+    }
+  }
+
   async function discordCallback(provider: PublicProvider, url: URL, state: string | null, req: IncomingMessage, res: ServerResponse) {
     try {
-      const { ticket } = takeState(state, provider, req);
+      const { ticket } = await takeState(state, provider, req);
       const account = provider === 'chzzk' ? await chzzkAccount(url, state!) : await steamAccount(url);
       backDiscord(res, await discord.step(ticket!, provider, account), provider);
     } catch (err) {
@@ -351,20 +398,47 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
       const provider = dv[1] as PublicProvider;
       const ticket = url.searchParams.get('t') ?? '';
       if (!discord.configured || !configured[provider]) backDiscord(res, 'unconfigured', provider);
-      else if (!discord.valid(ticket)) backDiscord(res, 'expired', provider);
-      else start(provider, 'discord', req, res, ticket);
+      else if (!(await discord.valid(ticket))) backDiscord(res, 'expired', provider);
+      else await start(provider, 'discord', req, res, ticket);
+      return true;
+    }
+
+    const owner = /^\/panel\/chzzk-owner\/(\d+)$/.exec(url.pathname);
+    if (owner) {
+      if (notGet(req, res)) return true;
+      const serverId = Number(owner[1]);
+      if (!configured.chzzk) backOwner(res, 'unconfigured');
+      else if (!admin.sessionOf(req)) backAdmin(res, 'chzzk', 'expired');
+      else if (!admin.canManage(admin.sessionOf(req), serverId)) backOwner(res, 'denied');
+      else await start('chzzk', 'owner', req, res, undefined, undefined, serverId);
+      return true;
+    }
+
+    const addBot = /^\/panel\/discord-bot\/(\d+)$/.exec(url.pathname);
+    if (addBot) {
+      if (notGet(req, res)) return true;
+      const serverId = Number(addBot[1]);
+      if (!botConfigured) backBot(res, 'unconfigured');
+      else if (!admin.sessionOf(req)) backAdmin(res, 'discord', 'expired');
+      else if (!admin.canManage(admin.sessionOf(req), serverId)) backBot(res, 'denied');
+      else await start('discord', 'bot', req, res, undefined, undefined, serverId);
+      return true;
+    }
+
+    if (url.pathname === '/callback/discord-bot') {
+      if (notGet(req, res)) return true;
+      await botCallback(url, url.searchParams.get('state'), req, res);
       return true;
     }
 
     const panel = /^\/panel\/(login|link)(?:\/(steam|chzzk|discord|twitch))?$/.exec(url.pathname);
     if (panel) {
-      if (!admin.allowed(req)) return false;
       if (notGet(req, res)) return true;
       const provider = (panel[2] ?? 'steam') as Provider;
       if (panel[1] === 'login') {
         if (provider !== 'steam') backAdmin(res, provider, 'failed');
         else if (!configured[provider]) backAdmin(res, provider, 'unconfigured');
-        else start(provider, 'admin', req, res);
+        else await start(provider, 'admin', req, res);
       } else if (provider === 'steam') {
         backIdentity(res, provider, 'failed');
       } else if (!configured[provider]) {
@@ -372,7 +446,7 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
       } else if (!admin.sessionOf(req)) {
         backAdmin(res, provider, 'expired');
       } else {
-        start(provider, 'identity', req, res);
+        await start(provider, 'identity', req, res);
       }
       return true;
     }
@@ -383,35 +457,41 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
     const provider = m[2] as Provider;
     if (notGet(req, res)) return true;
     const state = url.searchParams.get('state');
+    const peeked = step === 'callback' ? await peekState(state) : null;
     const purpose: Purpose = step === 'auth'
       ? (url.searchParams.get('next') === 'report' ? 'report' : 'link')
-      : (state && pending.get(state)?.purpose) || 'link';
+      : peeked?.purpose || 'link';
     const asked = url.searchParams.get('s');
-    const code = step === 'auth' ? (asked && servers().some((x) => x.joinCode === asked) ? asked : undefined) : (state && pending.get(state)?.code) || undefined;
+    const code = step === 'auth' ? (asked && servers().some((x) => x.joinCode === asked) ? asked : undefined) : peeked?.code || undefined;
     if (purpose === 'admin') return adminCallback(provider, url, state, req, res), true;
     if (purpose === 'identity') return identityCallback(provider, url, state, req, res), true;
+    if (purpose === 'owner') return ownerCallback(url, state, req, res), true;
+    if (purpose === 'bot') return backBot(res, 'expired'), true;
     if (provider !== 'chzzk' && provider !== 'steam') return back(res, provider, 'expired', purpose, null, code), true;
     try {
       if (!configured[provider]) throw new LinkError('unconfigured');
 
       if (step === 'auth') {
-        start(provider, purpose, req, res, undefined, code);
+        await start(provider, purpose, req, res, undefined, code);
         return true;
       }
       if (purpose === 'discord') {
         await discordCallback(provider, url, state, req, res);
         return true;
       }
-      const { s, panelSid } = takeState(state, provider, req);
+      const { sid, s, panelSid } = await takeState(state, provider, req);
       s[provider] = provider === 'chzzk' ? await chzzkAccount(url, state!) : await steamAccount(url);
       const clear = admin.proven(provider, s[provider]!, panelSid);
+      let result: Result = 'proven';
       if (s.chzzk && s.steam) {
-        if (!store.linkIfFree(s.steam, s.chzzk, sqlNow())) {
+        if (store.linkIfFree(s.steam, s.chzzk, sqlNow())) result = 'linked';
+        else {
           delete s[provider];
-          return back(res, provider, 'taken', purpose, clear, code), true;
+          result = 'taken';
         }
-        back(res, provider, 'linked', purpose, clear, code);
-      } else back(res, provider, 'proven', purpose, clear, code);
+      }
+      await saveSession(sid, s);
+      back(res, provider, result, purpose, clear, code);
     } catch (err) {
       const result = err instanceof LinkError ? err.result : 'failed';
       if (result === 'failed') console.error(`[연동] ${provider} 실패:`, err instanceof Error ? err.message : err);
@@ -424,33 +504,42 @@ export function createLinking(config: Config, store: Store, admin: AdminLogin, s
   const linkOf = (s: Session): Link | null =>
     (s.steam && store.linkByAccount('steam', s.steam.id)) || (s.chzzk && store.linkByAccount('chzzk', s.chzzk.id)) || null;
 
-  const joins = (link: Link | null, only: PublicServer | null) => (link ? (only ? [only] : servers().filter((s) => s.public))
-    .filter((s) => s.joinCode)
-    .map((s) => ({ id: s.id, name: s.name, url: joinUrl(s.joinCode!) })) : []);
+  const joins = (link: Link | null, only: PublicServer | null) => (only ? [only] : link ? servers().filter((s) => s.public) : [])
+    .filter((s) => s.joinCode && !s.demo && (s.entry().rule === 'open' || (link && s.passes(link))))
+    .map((s) => ({ id: s.id, name: s.name, url: joinUrl(s.joinCode!) }));
+
+  const access = (link: Link | null, only: PublicServer | null) => {
+    if (!only) return null;
+    const { rule } = only.entry();
+    if (rule === 'open') return 'ok';
+    if (!link) return 'link';
+    return only.passes(link) ? 'ok' : 'subscribe';
+  };
+
+  const serverView = (only: PublicServer | null) => only && { name: only.name, joinCode: only.joinCode, ...only.status(), ...only.entry() };
 
   const view = (s: Session | null, only: PublicServer | null) => {
-    if (!s) return { chzzk: null, steam: null, link: null, joins: [] };
-    const link = linkOf(s);
-    return { chzzk: s.chzzk?.name ?? null, steam: s.steam?.name ?? null, link, joins: joins(link, only) };
+    const link = s && linkOf(s);
+    return { chzzk: s?.chzzk?.name ?? null, steam: s?.steam?.name ?? null, link, joins: joins(link, only), access: access(link, only) };
   };
 
   function register(router: Router) {
-    router.add('GET', '/api/link/me', { public: true }, ({ req, query }) => {
+    router.add('GET', '/api/link/me', { public: true }, async ({ req, query }) => {
       const code = query.get('server');
       const only = code ? servers().find((x) => x.joinCode === code) ?? null : null;
       if (code && !only) throw new HttpError(404, 'no_server', '없는 서버 주소입니다');
       return {
         configured: { chzzk: configured.chzzk, steam: configured.steam },
-        server: only && { name: only.name, joinCode: only.joinCode },
-        ...view(session(req), only),
+        server: serverView(only),
+        ...view(await session(req), only),
       };
     });
   }
 
-  const accounts = (req: IncomingMessage): { chzzk?: Account; steam?: Account } | null => {
-    const s = session(req);
+  const accounts = async (req: IncomingMessage): Promise<{ chzzk?: Account; steam?: Account } | null> => {
+    const s = await session(req);
     return s && (s.chzzk || s.steam) ? { chzzk: s.chzzk, steam: s.steam } : null;
   };
 
-  return { handle, register, accounts, configured };
+  return { handle, register, accounts, configured, botConfigured };
 }

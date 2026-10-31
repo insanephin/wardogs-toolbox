@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
+import { brotliCompressSync, constants as zlib, gzipSync } from 'node:zlib';
 import type { Role, Session } from './auth.ts';
 import type { ServerRuntime } from './fleet.ts';
 
@@ -150,11 +151,29 @@ const TYPES: Record<string, string> = {
 };
 
 export const SECURITY_HEADERS = {
-  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
 };
+
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
+const compressed = new Map<string, Buffer>();
+
+function encode(file: string, version: string, data: Buffer, accept: string): { data: Buffer; encoding?: string } {
+  if (!COMPRESSIBLE.has(extname(file)) || data.length < 1024) return { data };
+  const encoding = /\bbr\b/.test(accept) ? 'br' : /\bgzip\b/.test(accept) ? 'gzip' : null;
+  if (!encoding) return { data };
+  const key = `${encoding}:${file}:${version}`;
+  let out = compressed.get(key);
+  if (!out) {
+    out = encoding === 'br'
+      ? brotliCompressSync(data, { params: { [zlib.BROTLI_PARAM_QUALITY]: 9, [zlib.BROTLI_PARAM_SIZE_HINT]: data.length } })
+      : gzipSync(data, { level: 9 });
+    compressed.set(key, out);
+  }
+  return { data: out, encoding };
+}
 
 export async function serveStatic(root: string, urlPath: string, res: ServerResponse): Promise<boolean> {
   const base = resolve(root);
@@ -168,14 +187,20 @@ export async function serveStatic(root: string, urlPath: string, res: ServerResp
   let file = resolve(join(base, rel || 'index.html'));
   if (!file.startsWith(base + sep)) return false;
   try {
-    if ((await stat(file)).isDirectory()) file = join(file, 'index.html');
-    const data = await readFile(file);
+    let info = await stat(file);
+    if (info.isDirectory()) {
+      file = join(file, 'index.html');
+      info = await stat(file);
+    }
+    const body = encode(file, `${info.mtimeMs}:${info.size}`, await readFile(file), String(res.req?.headers['accept-encoding'] ?? ''));
     res.writeHead(200, {
       'Content-Type': TYPES[extname(file)] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': rel.startsWith(`assets${sep}`) ? 'public, max-age=31536000, immutable' : 'no-cache',
+      Vary: 'Accept-Encoding',
+      ...(body.encoding ? { 'Content-Encoding': body.encoding } : {}),
       ...SECURITY_HEADERS,
     });
-    res.end(data);
+    res.end(body.data);
     return true;
   } catch {
     return false;

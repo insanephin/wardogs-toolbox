@@ -13,6 +13,7 @@ interface Column<T> {
   desc?: boolean;
   num?: boolean;
   className?: string;
+  width?: string;
 }
 
 interface SortState {
@@ -54,40 +55,39 @@ export function SortTable<T>({ rows, columns, rowKey, initial = null, compact = 
   const sorted = sortRows(rows, columns, sort);
   const shown = limit ? sorted.slice(0, limit) : sorted;
   const firstDir = (c: Column<T>): 1 | -1 => (c.desc || c.num ? -1 : 1);
+  const fixed = columns.some((c) => c.width);
   const toggle = (c: Column<T>) => setSort((s) => ({
     key: c.key,
     dir: s?.key === c.key ? (s.dir === 1 ? -1 : 1) : firstDir(c),
   }));
 
   return (
-    <>
-      <div className="list-total">전체 <span className="count">{rows.length}</span></div>
-      <table className={`table table-cards${compact ? ' table-compact' : ''}`}>
-        <thead>
-          <tr>
-            {columns.map((c) => {
-              if (!c.sort) return <th key={c.key} className={c.num ? 'num' : undefined}>{c.label}</th>;
-              const active = sort?.key === c.key;
-              return (
-                <th key={c.key} className={c.num ? 'num' : undefined} aria-sort={active ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none'}>
-                  <button type="button" className="th-sort" onClick={() => toggle(c)}>
-                    {c.label}{active ? <Icon icon={sort.dir > 0 ? faCaretUp : faCaretDown} className="sort-caret" /> : null}
-                  </button>
-                </th>
-              );
-            })}
+    <table className={`table table-cards${compact ? ' table-compact' : ''}${fixed ? ' table-fixed' : ''}`}>
+      {fixed ? <colgroup>{columns.map((c) => <col key={c.key} style={c.width ? { width: c.width } : undefined} />)}</colgroup> : null}
+      <thead>
+        <tr>
+          {columns.map((c) => {
+            if (!c.sort) return <th key={c.key} className={c.num ? 'num' : undefined}>{c.label}</th>;
+            const active = sort?.key === c.key;
+            return (
+              <th key={c.key} className={c.num ? 'num' : undefined} aria-sort={active ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none'}>
+                <button type="button" className="th-sort" onClick={() => toggle(c)}>
+                  {c.label}{active ? <Icon icon={sort.dir > 0 ? faCaretUp : faCaretDown} className="sort-caret" /> : null}
+                </button>
+              </th>
+            );
+          })}
+        </tr>
+      </thead>
+      <tbody>
+        {shown.map((r, i) => (
+          <tr key={rowKey(r, i)} className={rowClass?.(r)}>
+            {columns.map((c) => (
+              <td key={c.key} className={[c.num ? 'num' : '', c.className ?? ''].join(' ').trim() || undefined}>{c.render(r)}</td>
+            ))}
           </tr>
-        </thead>
-        <tbody>
-          {shown.map((r, i) => (
-            <tr key={rowKey(r, i)} className={rowClass?.(r)}>
-              {columns.map((c) => (
-                <td key={c.key} className={[c.num ? 'num' : '', c.className ?? ''].join(' ').trim() || undefined}>{c.render(r)}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </>
+        ))}
+      </tbody>
+    </table>
   );
 }

@@ -12,6 +12,7 @@ import { IconButton } from '../components/iconButton.tsx';
 import { HoldButton } from '../components/holdButton.tsx';
 import { SortTable } from '../components/sortTable.tsx';
 import { faRotateRight, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { PlayerName } from '../components/playerName.tsx';
 
 interface Bans {
   bans: Ban[];
@@ -265,7 +266,7 @@ function SteamWho({ id, profiles }: { id: string; profiles: SteamProfiles }) {
   return (
     <span className="who">
       <Avatar src={p?.avatar} />
-      <span>{p?.name ? <span className="pname">{p.name}</span> : null}<span className="mono muted small">{id}</span></span>
+      <span>{p?.name ? <PlayerName className="pname" steamId={id} name={p.name} /> : null}<span className="mono muted small">{id}</span></span>
     </span>
   );
 }

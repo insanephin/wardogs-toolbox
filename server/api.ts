@@ -8,8 +8,11 @@ import type { RconError, MapSelection } from './rcon.ts';
 import type { RotationSelection, RotationSettings } from './inidoc.ts';
 import type { FeedBatch } from './feed.ts';
 import type { Config } from './config.ts';
+import { botInstallConfigured } from './discord.ts';
 import type { Discord } from './discord.ts';
 import type { SteamProfiles } from './steam.ts';
+import { ownerView } from './chzzk.ts';
+import type { ChzzkSubscribers } from './chzzk.ts';
 import type { Fleet, ServerRuntime } from './fleet.ts';
 import { probeRcon, throttleProbe, requireRconUrl } from './target.ts';
 import { isDemoSteamId, demoProfiles } from './demo.ts';
@@ -19,6 +22,7 @@ import type { IncomingMessage } from 'node:http';
 const MAX_CHAT = 256;
 const MAX_REASON = 200;
 const FEED_BODY_LIMIT = 1024 * 1024;
+
 function readSelection(body: Body): MapSelection {
   const sel: MapSelection = { map: requireText(body.map, '맵', 128) };
   if (Array.isArray(body.experiences) && body.experiences.length) sel.experiences = body.experiences.map(String);
@@ -39,10 +43,11 @@ interface ApiContext {
   fleet: Fleet;
   store: Store;
   config: Config;
+  subscribers: ChzzkSubscribers;
 }
 
 export function registerApi(router: Router, ctx: ApiContext): void {
-  const { fleet, store, config, discord, steam } = ctx;
+  const { fleet, store, config, discord, steam, subscribers } = ctx;
 
   const ROTATION_ACTIONS = new Set(['rotation_add', 'rotation_set_next', 'rotation_move', 'rotation_remove', 'rotation_settings', 'rotation_jump', 'change_map', 'end_match', 'settings_update', 'config_apply']);
   const MANUAL_MAP_ACTIONS = new Set(['change_map', 'rotation_jump', 'end_match']);
@@ -163,7 +168,6 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     return act(srv, session, 'ban_queue_remove', id, null, async () => ({ removed: srv.store.removePendingBan(id) }));
   });
 
-  // Links are global; keep the demo server's fake links and real players' links apart.
   route('GET', '/api/links', 'viewer', ({ srv }) => srv.store.links().filter((l) => isDemoSteamId(l.steamId) === srv.demo));
 
   route('DELETE', '/api/links/:steamId', 'mod', ({ params, session, srv }) => {
@@ -220,16 +224,40 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     });
   });
 
-  route('GET', '/api/whitelist', 'viewer', ({ srv }) => ({ ...srv.store.whitelist(), bans: srv.store.whitelistBans() }));
+  route('GET', '/api/whitelist', 'viewer', ({ srv }) => ({
+    ...srv.store.whitelist(), bans: srv.store.whitelistBans(), owner: ownerView(srv.store.chzzkOwner()),
+  }));
 
   route('PUT', '/api/whitelist', 'admin', ({ body, session, srv }) => {
     const mode = String(body.mode ?? '') as WhitelistMode;
     if (!WHITELIST_MODES.includes(mode)) throw new HttpError(400, 'bad_mode', '모드는 off, kick, ban 중 하나입니다');
-    const message = mode === 'off' ? srv.store.whitelist().message : requireText(body.message, '안내 문구', MAX_REASON);
-    return act(srv, session, 'whitelist_update', mode, { message }, async () => {
-      srv.store.setWhitelist({ mode, message });
+    const prev = srv.store.whitelist();
+    const message = mode === 'off' ? prev.message : requireText(body.message, '안내 문구', MAX_REASON);
+    const subscribers = body.subscribers === undefined ? prev.subscribers : !!body.subscribers;
+    if (subscribers && !prev.subscribers && !srv.store.chzzkOwner()?.syncedAt) {
+      throw new HttpError(409, 'no_subscribers', '치지직 채널을 연결하고 구독자 목록을 한 번 이상 받아온 뒤에 켤 수 있습니다');
+    }
+    return act(srv, session, 'whitelist_update', mode, { message, subscribers }, async () => {
+      srv.store.setWhitelist({ mode, message, subscribers });
       srv.poller.nudge();
-      return { mode, message };
+      return { mode, message, subscribers };
+    });
+  });
+
+  route('POST', '/api/chzzk-owner/sync', 'admin', async ({ srv }) => {
+    if (!srv.store.chzzkOwner()) throw new HttpError(404, 'no_owner', '연결된 치지직 채널이 없습니다');
+    await subscribers.sync(srv);
+    return ownerView(srv.store.chzzkOwner());
+  });
+
+  route('DELETE', '/api/chzzk-owner', 'admin', ({ session, srv }) => {
+    const prev = srv.store.chzzkOwner();
+    if (!prev) return { ok: true };
+    return act(srv, session, 'chzzk_owner_disconnect', prev.channelId, { name: prev.channelName }, async () => {
+      srv.store.setWhitelist({ ...srv.store.whitelist(), subscribers: false });
+      subscribers.disconnect(srv);
+      srv.poller.nudge();
+      return { ok: true };
     });
   });
 
@@ -247,7 +275,7 @@ export function registerApi(router: Router, ctx: ApiContext): void {
   route('DELETE', '/api/reserved/:steamId', 'admin', ({ params, session, srv }) => {
     const id = requireSteamId(params.steamId);
     if (srv.store.discordLink('steam', id)) {
-      throw new HttpError(409, 'streamer_slot', '화이트리스트 유저의 예약 슬롯입니다. 빼려면 연동 탭에서 화이트리스트를 해제하세요');
+      throw new HttpError(409, 'streamer_slot', '화이트리스트 유저의 예약 슬롯입니다. 빼려면 화이트리스트 탭에서 해제하세요');
     }
     return editReserved(srv, session, id, false);
   });
@@ -392,6 +420,20 @@ export function registerApi(router: Router, ctx: ApiContext): void {
       store.updateServer(srv.id, { feedToken: newFeedToken() });
       return { token: fleet.refresh(srv.id)!.feedToken };
     }));
+
+  route('GET', '/api/discord-bot', 'admin', ({ srv }) => ({
+    configured: botInstallConfigured(config) && discord.configured,
+    demo: !!srv.demo,
+    guild: store.discordGuild(srv.id),
+  }));
+  route('DELETE', '/api/discord-guild', 'admin', ({ session, srv }) => {
+    const guild = store.discordGuild(srv.id);
+    if (!guild) return { ok: true };
+    return act(srv, session, 'discord_guild_disconnect', guild.id, { name: guild.name }, async () => {
+      store.setDiscordGuild(srv.id, null);
+      return { ok: true };
+    });
+  });
 
   route('GET', '/api/settings', 'admin', async ({ srv }) => {
     const doc = await srv.rcon.config();

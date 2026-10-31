@@ -7,10 +7,11 @@ export const ACTION_LABELS: Record<string, string> = {
   change_map: '맵 변경', score_period: '점수 주기 변경', end_match: '매치 종료', restart_match: '매치 재시작', set_lighting: '조명 변경',
   config_apply: '설정 적용', whitelist_update: '화이트리스트 변경', whitelist_kick: '미연동 킥',
   whitelist_ban: '미연동 밴', whitelist_unban: '미연동 밴 해제', report_update: '신고 처리', unlink: '연동 해제', streamer_remove: '화이트리스트 해제', entry_gate_start: '입장 제한 시작', entry_gate_stop: '입장 제한 해제', entry_gate_open: '입장 제한 자동 해제', entry_gate_kick: '입장 제한 킥', turnover_update: '교대 입장 설정', turnover_start: '교대 입장 시작', turnover_kick: '교대 입장 킥', turnover_skip: '교대 입장 건너뜀 (관리자 조작)',
+  chzzk_owner_connect: '구독 확인 채널 연결', chzzk_owner_disconnect: '구독 확인 채널 해제',
   rotation_add: '로테이션 추가', rotation_set_next: '다음 맵 예약', rotation_move: '로테이션 순서 변경', rotation_remove: '로테이션 삭제',
   rotation_settings: '로테이션 설정', rotation_jump: '로테이션 이동',
-  settings_update: '간편 설정 적용', sponsor_update: '스폰서 이미지 변경', rcon_update: 'RCON 연결 정보 변경', feed_token_copy: '피드 토큰 복사', feed_token_rotate: '피드 토큰 재발급',
-  server_create: '서버 추가', server_update: '서버 이름 변경', member_add: '관리자 추가', member_role: '권한 변경', member_remove: '관리자 삭제', preset_save: '프리셋 저장', preset_delete: '프리셋 삭제',
+  settings_update: '간편 설정 적용', sponsor_update: '스폰서 이미지 변경', rcon_update: 'RCON 연결 정보 변경', feed_token_copy: '피드 토큰 복사', feed_token_rotate: '피드 토큰 재발급', discord_key_copy: '디스코드 패널 명령어 복사', discord_key_rotate: '디스코드 패널 비밀키 재발급', discord_guild_connect: '디스코드 서버 연결', discord_guild_disconnect: '디스코드 서버 연결 해제',
+  server_create: '서버 추가', server_update: '서버 이름 변경', member_add: '관리자 추가', member_role: '권한 변경', member_remove: '관리자 삭제', owner_transfer: '소유권 양도', preset_save: '프리셋 저장', preset_delete: '프리셋 삭제',
 };
 
 export const TAG_LABELS: Record<string, string> = {

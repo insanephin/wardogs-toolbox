@@ -1,13 +1,10 @@
-from typing import Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class StreamerLink(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
     steam_id: str = Field(alias="steamId")
-    steam_name: Optional[str] = Field(default=None, alias="steamName")
-    chzzk_name: Optional[str] = Field(default=None, alias="chzzkName")
+    steam_name: str | None = Field(default=None, alias="steamName")
+    chzzk_name: str | None = Field(default=None, alias="chzzkName")
     reserved: bool
 
 
@@ -17,37 +14,32 @@ class VerifyUrls(BaseModel):
 
 
 class TicketServer(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
     name: str
-    join_url: Optional[str] = Field(default=None, alias="joinUrl")
+    join_url: str | None = Field(default=None, alias="joinUrl")
 
 
 class PanelServer(BaseModel):
     id: int
     name: str
+    join_url: str | None = Field(default=None, alias="joinUrl")
 
 
-class AdminServers(BaseModel):
-    linked: bool
-    servers: list[PanelServer]
+class GuildServer(BaseModel):
+    id: int
+    name: str
 
 
 class Ticket(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
     ticket: str
     urls: VerifyUrls
     expires_at: int = Field(alias="expiresAt")
-    link: Optional[StreamerLink] = None
-    server: Optional[TicketServer] = None
+    link: StreamerLink | None = None
+    server: TicketServer | None = None
 
 
 class TicketState(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
     version: int
-    result: Optional[str] = None
-    chzzk_name: Optional[str] = Field(default=None, alias="chzzkName")
-    steam_name: Optional[str] = Field(default=None, alias="steamName")
+    result: str | None = None
+    chzzk_name: str | None = Field(default=None, alias="chzzkName")
+    steam_name: str | None = Field(default=None, alias="steamName")
     done: bool

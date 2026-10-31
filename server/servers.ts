@@ -88,14 +88,12 @@ export function registerServers(router: Router, { store, fleet, hub, steam, conf
 
   router.add('GET', '/api/s/:sid/members', { role: 'admin' }, ({ srv }) => store.members(srv.id));
 
-  const owners = (serverId: number) => store.members(serverId).filter((m) => m.role === 'owner').length;
-
   router.add('PUT', '/api/s/:sid/members/:steamId', { role: 'owner' }, async ({ params, body, session, srv }) => {
     const steamId = requireSteamId(params.steamId);
     const role = body.role;
-    if (!isRole(role)) throw new HttpError(400, 'bad_role', '권한은 viewer, mod, admin, owner 중 하나입니다');
+    if (!isRole(role) || role === 'owner') throw new HttpError(400, 'bad_role', '권한은 viewer, mod, admin 중 하나입니다. 소유자는 소유권 양도로만 바꿀 수 있습니다');
     const prev = store.memberRole(srv.id, steamId);
-    if (prev === 'owner' && role !== 'owner' && owners(srv.id) <= 1) throw new HttpError(409, 'last_owner', '마지막 소유자는 권한을 낮출 수 없습니다');
+    if (prev === 'owner') throw new HttpError(409, 'owner_locked', '소유자 권한은 바꿀 수 없습니다. 소유권 양도를 이용하세요');
     if (!store.user(steamId)) {
       const profile = (await steam.lookup([steamId]))[steamId];
       store.touchUser(steamId, profile?.name ?? null, profile?.avatar ?? null, false);
@@ -109,10 +107,24 @@ export function registerServers(router: Router, { store, fleet, hub, steam, conf
     const steamId = params.steamId;
     const prev = store.memberRole(srv.id, steamId);
     if (!prev) throw new HttpError(404, 'not_found', '이 서버의 멤버가 아닙니다');
-    if (prev === 'owner' && owners(srv.id) <= 1) throw new HttpError(409, 'last_owner', '마지막 소유자는 뺄 수 없습니다');
+    if (prev === 'owner') throw new HttpError(409, 'owner_locked', '소유자는 뺄 수 없습니다. 먼저 소유권을 양도하세요');
     store.removeMember(srv.id, steamId);
     hub.close((c) => c.serverId === srv.id && c.session.steamId === steamId && !c.session.superadmin);
     log(srv, session, 'member_remove', steamId, { role: prev, name: store.user(steamId)?.name });
+    return store.members(srv.id);
+  });
+
+  router.add('POST', '/api/s/:sid/owner', { role: 'owner' }, ({ body, session, srv }) => {
+    const steamId = requireSteamId(body.steamId);
+    const prev = store.memberRole(srv.id, steamId);
+    if (!prev) throw new HttpError(404, 'not_member', '이 서버의 관리자에게만 양도할 수 있습니다. 먼저 관리자로 추가하세요');
+    if (prev === 'owner') throw new HttpError(409, 'already_owner', '이미 소유자입니다');
+    const from = store.members(srv.id).filter((m) => m.role === 'owner').map((m) => m.steamId);
+    store.tx(() => {
+      for (const id of from) store.setMember(srv.id, id, 'admin', session.steamId);
+      store.setMember(srv.id, steamId, 'owner', session.steamId);
+    });
+    log(srv, session, 'owner_transfer', steamId, { from, name: store.user(steamId)?.name });
     return store.members(srv.id);
   });
 

@@ -4,7 +4,7 @@ import { Poller } from './poller.ts';
 import { tokenMatches } from './http.ts';
 import type { Emit, SseHub } from './http.ts';
 import type { Store, ServerStore, ServerRow } from './store.ts';
-import type { WeaponNames } from './weapons.ts';
+import type { WeaponLookup } from './weapons.ts';
 import type { SteamProfiles } from './steam.ts';
 
 const MAX_NAME = 40;
@@ -31,7 +31,7 @@ interface FleetOptions {
   store: Store;
   hub: SseHub;
   steam: SteamProfiles;
-  weapons: WeaponNames;
+  weapons: WeaponLookup;
   gapSec: number;
   minKills: number;
   demoRcon?: (row: ServerRow) => RconClient | null;

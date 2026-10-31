@@ -8,6 +8,7 @@ import { Card, Empty, MapArt } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
 import { IconButton } from '../components/iconButton.tsx';
 import { faArrowUp, faArrowDown, faTrash, faForwardStep } from '@fortawesome/free-solid-svg-icons';
+import { MODIFIER_LABEL, BASE_MODE_LABEL, isBaseMode, modesLabel, LIGHTING, lightingLabel, ALTERNATOR, ALTERNATOR_DEFAULT_HINT } from '../lib/labels.ts';
 
 const pick = (list: CatalogItem[], want: string | undefined): string => (want && list.some((x) => x.id === want) ? want : list[0]?.id ?? '');
 
@@ -53,7 +54,7 @@ function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog
   const canEditRotation = admin && (caps?.features?.configDocument ?? true);
   const [map, setMap] = useState(() => pick(catalog.maps, getState().live?.status?.map));
   const [details, setDetails] = useState<MapOptions | null>(null);
-  const [checked, setChecked] = useState<string[]>([]);
+  const [modifier, setModifier] = useState('');
   const [alternator, setAlternator] = useState('');
   const [lighting, setLighting] = useState('');
   const [rotationOn, setRotationOn] = useState<boolean | null>(null);
@@ -69,7 +70,7 @@ function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog
       .then((d) => {
         if (stale) return;
         setDetails(d);
-        setChecked(d.experiences.slice(0, 1));
+        setModifier('');
         setAlternator('');
       });
     return () => {
@@ -77,16 +78,16 @@ function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog
     };
   }, [map]);
 
-  const expLabel = (id: string) => catalog.experiences.find((x) => x.id === id)?.displayName || id;
   const mapLabel = (id: string) => {
     const m = catalog.maps.find((x) => x.id === id);
     return m ? `${m.displayName} (${m.id})` : id;
   };
-  const toggle = (id: string, on: boolean) => setChecked((c) => (on ? [...c, id] : c.filter((x) => x !== id)));
+  const base = details?.experiences.find(isBaseMode);
+  const modifiers = (details?.experiences || []).filter((id) => !isBaseMode(id));
 
   const selection = () => ({
     map,
-    experiences: (details?.experiences || []).filter((id) => checked.includes(id)),
+    experiences: [base, modifier || null].filter((x): x is string => !!x),
     lighting: lighting || undefined,
     zoneAlternator: alternator || undefined,
   });
@@ -110,34 +111,36 @@ function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog
         </select>
       </label>
       <div className="field">
-        <span className="field-label">모드·수정자</span>
-        <div className="checks">
-          {details ? details.experiences.map((id) => (
-            <label key={id} className="check">
-              <input type="checkbox" value={id} checked={checked.includes(id)} onChange={(e) => toggle(id, e.target.checked)} />
-              <span>{expLabel(id)}</span>
-            </label>
-          )) : <Empty><Spinner /></Empty>}
-        </div>
+        <span className="field-label">모드</span>
+        {details ? (
+          <div className="seg" role="radiogroup" aria-label="모드">
+            {[{ id: '', label: `${BASE_MODE_LABEL} (기본)` }, ...modifiers.map((id) => ({ id, label: MODIFIER_LABEL[id] ?? id }))].map((o) => (
+              <button key={o.id || 'base'} type="button" role="radio" aria-checked={modifier === o.id} className={modifier === o.id ? 'on' : ''}
+                onClick={() => setModifier(o.id)}>{o.label}</button>
+            ))}
+          </div>
+        ) : <Empty><Spinner /></Empty>}
       </div>
       <div className="grid-2 grid-tight">
         <label className="field">
           <span className="field-label">존 교대</span>
           <select aria-label="존 교대" value={alternator} onChange={(e) => setAlternator(e.target.value)}>
             <option value="">기본값</option>
-            {(details?.alternators || []).map((a) => <option key={a.tag} value={a.tag}>{a.displayName || a.tag}</option>)}
+            {(details?.alternators || []).map((a) => <option key={a.tag} value={a.tag}>{ALTERNATOR[a.tag]?.label ?? (a.displayName || a.tag)}</option>)}
           </select>
+          <span className="hint">{alternator ? ALTERNATOR[alternator]?.hint : ALTERNATOR_DEFAULT_HINT}</span>
         </label>
         <label className="field">
           <span className="field-label">조명</span>
           <select aria-label="조명" value={lighting} onChange={(e) => setLighting(e.target.value)}>
             <option value="">기본값</option>
-            {catalog.lightings.map((l) => <option key={l.id} value={l.id}>{l.displayName || l.id}</option>)}
+            {catalog.lightings.map((l) => <option key={l.id} value={l.id}>{LIGHTING[l.id]?.label ?? (l.displayName || l.id)}</option>)}
           </select>
+          <span className="hint">{lighting ? LIGHTING[lighting]?.hint : '맵에 정해진 기본 조명을 씁니다.'}</span>
         </label>
       </div>
       <div className="row-wrap">
-        <button className="btn btn-primary" type="submit" disabled={!admin}>맵 변경</button>
+        <button className="btn btn-primary" type="submit" disabled={!admin || !details?.experiences.length}>맵 변경</button>
         <button className="btn" type="button" disabled={!canEditRotation || rotationOn === false}
           title={rotationOn === false ? '로테이션 꺼짐' : undefined}
           onClick={() => toRotation('다음 맵 예약', '/api/rotation/next')}>다음 맵으로 예약</button>
@@ -156,7 +159,7 @@ function LiveLighting({ catalog, admin }: { catalog: Catalog; admin: boolean }) 
       <span className="field-label">조명·날씨 즉시 변경</span>
       <span className="inline-field">
         <select aria-label="실시간 조명" value={lighting} onChange={(e) => setLighting(e.target.value)}>
-          {catalog.lightings.map((l) => <option key={l.id} value={l.id}>{l.displayName || l.id}</option>)}
+          {catalog.lightings.map((l) => <option key={l.id} value={l.id}>{LIGHTING[l.id]?.label ?? (l.displayName || l.id)}</option>)}
         </select>
         <button className="btn ctl-btn" type="button" disabled={!admin || !serves(caps, 'PUT /v1/world/lighting')}
           onClick={() => run('조명 변경', 'POST', '/api/world/lighting', { lighting })}>적용</button>
@@ -309,8 +312,8 @@ function Rotation({ rev, admin, onChange }: { rev: number; admin: boolean; onCha
               <tr key={i} className={e.status === 'now' ? 'row-now' : ''}>
                 <td className="num">{(e.index ?? i) + 1}</td>
                 <td><span className="inline-row"><MapArt map={e.map} lighting={e.lighting} variant="wide" />{e.map}</span></td>
-                <td>{(e.experiences || []).join(', ')}</td>
-                <td>{e.lighting || '—'}</td>
+                <td>{modesLabel(e.experiences || []) || '—'}</td>
+                <td>{lightingLabel(e.lighting) || '—'}</td>
                 <td>
                   {e.status === 'now' ? <span className="tag tag-hs">진행 중</span> : e.status === 'next' ? <span className="tag">다음</span> : null}
                   {e.denied ? <span className="tag tag-danger" title="서버가 모르는 모드를 참조합니다">거부됨</span> : null}

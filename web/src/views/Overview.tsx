@@ -8,7 +8,9 @@ import { Counter } from '../lib/modal.tsx';
 import { fmtClock, fmtDuration, fmtAgo, fmtDist, pct, charCount, STATE_LABELS } from '../lib/format.ts';
 import { Card, Empty, ScoreRow, Fdot, MapArt, useNow, useFactionColor } from '../components/common.tsx';
 import { KillRow, EngagementCard } from '../components/feedItems.tsx';
+import { modesLabel, lightingLabel, alternatorLabel } from '../lib/labels.ts';
 import { CashCard } from '../components/cashChart.tsx';
+import { PlayerName } from '../components/playerName.tsx';
 
 const HS_FLAG_PCT = 60;
 const HS_FLAG_MIN_KILLS = 8;
@@ -80,11 +82,6 @@ function Banners({ live }: { live: Live | null }) {
   );
 }
 
-const MODIFIERS: Record<string, string> = { KOTH_InfantryOnly: '보병 전용', KOTH_Hardcore: '하드코어' };
-function modeLabel(id: string): string {
-  return MODIFIERS[id] ?? (/_KOTH_\d+$/.test(id) ? 'KOTH' : id);
-}
-
 function ServerLine({ live }: { live: Live | null }) {
   const id = live?.serverId;
   return (
@@ -111,14 +108,14 @@ function Stats({ live }: { live: Live | null }) {
   const s = live?.status;
   const m = live?.match;
   const feedState = live?.feed?.matchState?.state;
-  const modes = (s?.experiences || []).map(modeLabel).join(' · ');
+  const modes = modesLabel(s?.experiences || []);
   return (
     <div className="stat-grid">
       <Stat label="맵" flash={s?.map} value={s?.map ? <span className="inline-row"><MapArt map={s.map} lighting={s.lighting} variant="square" />{s.map}</span> : '—'}
-        sub={s ? [modes || '모드 정보 없음', s.lighting, s.alternator && s.alternator !== 'None' ? `존 ${s.alternator}` : null].filter(Boolean).join(' · ') : null} />
+        sub={s ? [modes || '모드 정보 없음', lightingLabel(s.lighting), alternatorLabel(s.alternator) ? `존 ${alternatorLabel(s.alternator)}` : null].filter(Boolean).join(' · ') : null} />
       <Stat label="인원" flash={s?.players.current} value={s ? `${s.players.current} / ${s.players.max}` : '—'} />
       <Stat label="다음 맵" flash={live?.nextMap?.map} value={live?.nextMap ? <span className="inline-row"><MapArt map={live.nextMap.map} lighting={live.nextMap.lighting} variant="square" />{live.nextMap.map}</span> : '—'}
-        sub={live?.rotationEnabled === false ? '로테이션 꺼짐' : live?.nextMap ? [live.nextMap.experiences.map(modeLabel).join(' · '), live.nextMap.lighting].filter(Boolean).join(' · ') || null : null} />
+        sub={live?.rotationEnabled === false ? '로테이션 꺼짐' : live?.nextMap ? [modesLabel(live.nextMap.experiences), lightingLabel(live.nextMap.lighting)].filter(Boolean).join(' · ') || null : null} />
       <Stat label="매치 시계" value={fmtClock(m?.matchSeconds)} />
       <Stat label="매치 상태" flash={feedState} value={feedState ? STATE_LABELS[feedState] ?? feedState : '—'}
         sub={feedState ? fmtAgo(live?.feed.matchState?.at) : null} />
@@ -156,7 +153,7 @@ function TopPlayers({ live }: { live: Live | null }) {
       <tbody>
         {rows.map((p) => (
           <tr key={p.steamId}>
-            <td><Fdot color={color(p.faction)} />{p.name}</td>
+            <td><Fdot color={color(p.faction)} /><PlayerName steamId={p.steamId} name={p.name} /></td>
             <td className="num">{p.kills}</td>
             <td className="num">{p.deaths}</td>
             <td className="num">{p.hs ? `${pct(p.hs.headshots, p.hs.kills)}%` : '—'}</td>
@@ -169,16 +166,16 @@ function TopPlayers({ live }: { live: Live | null }) {
 
 function Hints({ live }: { live: Live | null }) {
   const names = new Map((live?.players || []).map((p) => [p.steamId, p.name]));
-  const hints: { who: string; text: string }[] = [];
+  const hints: { steamId: string; who: string; text: string }[] = [];
   for (const r of live?.matchStats || []) {
     const who = names.get(r.steamId) ?? r.steamId;
     const hsPct = pct(r.headshots, r.kills) ?? 0;
-    if (r.kills >= HS_FLAG_MIN_KILLS && hsPct >= HS_FLAG_PCT) hints.push({ who, text: `헤드샷률 ${hsPct}% (${r.headshots}/${r.kills}킬)` });
-    if ((r.maxDistance ?? 0) >= LONG_KILL_M) hints.push({ who, text: `최장 킬 ${fmtDist(r.maxDistance)}` });
-    if (r.teamkills >= 3) hints.push({ who, text: `팀킬 추정 ${r.teamkills}회` });
+    if (r.kills >= HS_FLAG_MIN_KILLS && hsPct >= HS_FLAG_PCT) hints.push({ steamId: r.steamId, who, text: `헤드샷률 ${hsPct}% (${r.headshots}/${r.kills}킬)` });
+    if ((r.maxDistance ?? 0) >= LONG_KILL_M) hints.push({ steamId: r.steamId, who, text: `최장 킬 ${fmtDist(r.maxDistance)}` });
+    if (r.teamkills >= 3) hints.push({ steamId: r.steamId, who, text: `팀킬 추정 ${r.teamkills}회` });
   }
   return hints.length
-    ? <ul className="hint-list">{hints.map((x, i) => <li key={i}><strong>{x.who}</strong> {x.text}</li>)}</ul>
+    ? <ul className="hint-list">{hints.map((x, i) => <li key={i}><strong><PlayerName steamId={x.steamId} name={x.who} /></strong> {x.text}</li>)}</ul>
     : <Empty>눈에 띄는 수치가 없습니다.</Empty>;
 }
 

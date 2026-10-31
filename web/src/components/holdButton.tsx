@@ -55,7 +55,10 @@ export function HoldButton({ label, onConfirm }: { label: string; onConfirm: () 
       onKeyDown={onKeyDown} onKeyUp={(e) => (e.key === ' ' || e.key === 'Enter') && end()}
       onContextMenu={(e) => e.preventDefault()}>
       <span className="hold-fill" style={{ transform: `scaleX(${progress})` }} aria-hidden="true" />
-      <span className="hold-text">{progress > 0 ? '계속 누르세요' : `${label} · ${seconds}초 누르기`}</span>
+      <span className="hold-text" aria-hidden="true">
+        <span className={progress > 0 ? 'hold-off' : undefined}>{`${label} · ${seconds}초 누르기`}</span>
+        <span className={progress > 0 ? undefined : 'hold-off'}>계속 누르세요</span>
+      </span>
     </button>
   );
 }

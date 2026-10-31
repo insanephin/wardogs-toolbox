@@ -1,5 +1,6 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { ROLES } from './store.ts';
+import type { Store } from './store.ts';
 import { STEAM_ID } from './http.ts';
 import type { Role } from './store.ts';
 
@@ -27,35 +28,36 @@ export function parseSuperadmins(spec: string): Set<string> {
   return ids;
 }
 
+const hashToken = (id: string) => createHash('sha256').update(id).digest('base64url');
+
 export class Auth {
   superadmins: Set<string>;
-  sessions = new Map<string, Session>();
+  #store: Store;
 
-  constructor(superadminSpec: string) {
+  constructor(superadminSpec: string, store: Store) {
     this.superadmins = parseSuperadmins(superadminSpec);
+    this.#store = store;
   }
 
   login(steamId: string, name: string, guest = false): string {
-    const now = Date.now();
-    for (const [k, s] of this.sessions) if (s.expires < now) this.sessions.delete(k);
     const id = randomBytes(32).toString('base64url');
-    this.sessions.set(id, { steamId, name: name || steamId, superadmin: !guest && this.superadmins.has(steamId), ...(guest && { guest }), expires: now + SESSION_TTL_MS });
+    this.#store.saveSession(hashToken(id), { steamId, name: name || steamId, guest, expires: Date.now() + SESSION_TTL_MS });
     return id;
   }
 
   session(id: string | undefined): Session | null {
     if (!id) return null;
-    const s = this.sessions.get(id);
+    const s = this.#store.session(hashToken(id));
     if (!s) return null;
     if (s.expires < Date.now()) {
-      this.sessions.delete(id);
+      this.#store.deleteSession(hashToken(id));
       return null;
     }
-    return s;
+    return { steamId: s.steamId, name: s.name, superadmin: !s.guest && this.superadmins.has(s.steamId), ...(s.guest && { guest: true }), expires: s.expires };
   }
 
   logout(id: string | undefined): void {
-    if (id) this.sessions.delete(id);
+    if (id) this.#store.deleteSession(hashToken(id));
   }
 }
 
