@@ -121,7 +121,7 @@ function createApp(config: Config, kv: Kv) {
       if (!srv || srv.demo || !role || !hasRole(role, 'admin')) return 'denied';
       void subscribers.connect(srv, token, channel, s.name);
       srv.emit('action', srv.store.logAction(s.name, 'chzzk_owner_connect', channel.id, { name: channel.name }, true));
-      console.log(`[치지직] #${srv.id} ${srv.name} 구독 확인 채널 연결: ${channel.name} (${channel.id}) by ${s.name}`);
+      console.log(`[치지직] #${srv.id} ${srv.name} 팔로워·구독 확인 채널 연결: ${channel.name} (${channel.id}) by ${s.name}`);
       return 'linked';
     },
     discordGuild: (panelSid, serverId, guild) => {
@@ -145,10 +145,10 @@ function createApp(config: Config, kv: Kv) {
     }),
     entry: () => {
       const wl = s.store.whitelist();
-      const rule = wl.mode === 'off' ? 'open' as const : wl.subscribers ? 'subscribers' as const : 'linked' as const;
-      return { rule, channel: rule === 'subscribers' ? s.store.chzzkOwner()?.channelName ?? null : null };
+      const rule = wl.mode === 'off' ? 'open' as const : wl.audience;
+      return { rule, channel: rule === 'follower' || rule === 'subscriber' ? s.store.chzzkOwner()?.channelName ?? null : null };
     },
-    passes: (link) => !s.store.whitelist().subscribers || s.store.subscribedOf([link.chzzkChannelId]).size > 0,
+    passes: (link) => s.store.passes(link.chzzkChannelId),
   })), discord);
   linking.register(router);
   registerReports(router, { store, fleet, configured: linking.configured, accounts: linking.accounts, bot: discord.bot, imagesDir: join(dirname(config.dbPath), 'report-images') });

@@ -532,20 +532,25 @@ export class Poller {
 
   passingLinks(steamIds: string[]): Map<string, Link> {
     const links = this.store.linksBySteam(steamIds);
-    if (!this.store.whitelist().subscribers) return links;
-    const subscribed = this.store.subscribedOf([...links.values()].map((l) => l.chzzkChannelId));
-    for (const [id, l] of links) if (!subscribed.has(l.chzzkChannelId)) links.delete(id);
+    const { audience } = this.store.whitelist();
+    if (audience === 'linked') return links;
+    const inAudience = this.store.audienceOf(audience, [...links.values()].map((l) => l.chzzkChannelId));
+    for (const [id, l] of links) if (!inAudience.has(l.chzzkChannelId)) links.delete(id);
     return links;
   }
 
   playersView(streamers: Map<string, DiscordLink>) {
     const links = this.store.linksBySteam(this.steamIds());
-    const subscribed = this.store.subscribedOf([...links.values()].map((l) => l.chzzkChannelId));
+    const channels = [...links.values()].map((l) => l.chzzkChannelId);
+    const subscribed = this.store.audienceOf('subscriber', channels);
+    const followed = this.store.audienceOf('follower', channels);
+    const channelOf = (p: GamePlayer) => (p.steamId && links.get(p.steamId)?.chzzkChannelId) || '';
     return this.players.map((p) => ({
       ...p,
       joinedAt: (p.steamId && this.joinedAt.get(p.steamId)) || null,
       link: (p.steamId && links.get(p.steamId)) || null,
-      subscriber: !!p.steamId && subscribed.has(links.get(p.steamId)?.chzzkChannelId ?? ''),
+      subscriber: subscribed.has(channelOf(p)),
+      follower: followed.has(channelOf(p)),
       streamer: (p.steamId && streamers.get(p.steamId)) || null,
       avatar: (p.steamId && this.steam?.cached(p.steamId)?.avatar) || null,
     }));

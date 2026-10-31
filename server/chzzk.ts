@@ -1,5 +1,5 @@
 import type { Config } from './config.ts';
-import type { ChzzkOwner } from './store.ts';
+import type { ChzzkAudience, ChzzkOwner } from './store.ts';
 import type { Fleet, ServerRuntime } from './fleet.ts';
 import { errorMessage } from './http.ts';
 
@@ -8,7 +8,8 @@ const TIMEOUT_MS = 10_000;
 const SYNC_EVERY_MS = 3 * 60_000;
 const REFRESH_BEFORE_MS = 6 * 3600_000;
 const PAGE_SIZE = 50;
-const MAX_PAGES = 400;
+const MAX_PAGES: Record<ChzzkAudience, number> = { subscriber: 400, follower: 1000 };
+const AUDIENCE_LABEL: Record<ChzzkAudience, string> = { subscriber: '구독자', follower: '팔로워' };
 
 export interface ChzzkToken {
   accessToken: string;
@@ -53,20 +54,24 @@ export function chzzkRevoke(config: Config, token: string, hint: 'access_token' 
   post('/auth/v1/token/revoke', { clientId, clientSecret, token, tokenTypeHint: hint }).catch(() => {});
 }
 
-async function subscribers(accessToken: string): Promise<string[]> {
+async function audience(accessToken: string, kind: ChzzkAudience): Promise<string[]> {
   const ids: string[] = [];
-  for (let page = 0; page < MAX_PAGES; page++) {
+  const path = kind === 'subscriber' ? 'subscribers' : 'followers';
+  for (let page = 0; page < MAX_PAGES[kind]; page++) {
     const q = new URLSearchParams({ page: String(page), size: String(PAGE_SIZE) });
-    const c = await call(`/open/v1/channels/subscribers?${q}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const c = await call(`/open/v1/channels/${path}?${q}`, { headers: { Authorization: `Bearer ${accessToken}` } });
     const data: any[] = Array.isArray(c?.data) ? c.data : [];
     for (const s of data) if (s?.channelId) ids.push(String(s.channelId));
     if (data.length < PAGE_SIZE) return ids;
   }
-  throw new ChzzkError(`구독자가 ${PAGE_SIZE * MAX_PAGES}명을 넘어 목록을 끝까지 받지 못했습니다`);
+  throw new ChzzkError(`${AUDIENCE_LABEL[kind]}가 ${PAGE_SIZE * MAX_PAGES[kind]}명을 넘어 목록을 끝까지 받지 못했습니다`);
 }
 
 export function ownerView(o: ChzzkOwner | null) {
-  return o && { channelId: o.channelId, channelName: o.channelName, connectedAt: o.connectedAt, syncedAt: o.syncedAt, count: o.count, error: o.error };
+  return o && {
+    channelId: o.channelId, channelName: o.channelName, connectedAt: o.connectedAt, syncedAt: o.syncedAt, count: o.count, error: o.error,
+    followerSyncedAt: o.followerSyncedAt ?? null, followerCount: o.followerCount ?? 0, followerError: o.followerError ?? null,
+  };
 }
 
 export function createChzzkSubscribers(config: Config, fleet: Fleet) {
@@ -74,6 +79,25 @@ export function createChzzkSubscribers(config: Config, fleet: Fleet) {
   let timer: NodeJS.Timeout | undefined;
 
   const still = (srv: ServerRuntime, o: ChzzkOwner) => srv.store.chzzkOwner()?.connectedAt === o.connectedAt;
+
+  async function syncAudience(srv: ServerRuntime, owner: ChzzkOwner, kind: ChzzkAudience): Promise<void> {
+    const k = kind === 'subscriber'
+      ? { at: 'syncedAt', count: 'count', error: 'error' } as const
+      : { at: 'followerSyncedAt', count: 'followerCount', error: 'followerError' } as const;
+    let patch: Partial<ChzzkOwner>;
+    try {
+      const ids = await audience(owner.accessToken, kind);
+      if (!still(srv, owner)) return;
+      srv.store.replaceAudience(kind, ids);
+      patch = { [k.at]: Date.now(), [k.count]: ids.length, [k.error]: null };
+    } catch (err) {
+      const message = errorMessage(err);
+      console.error(`[치지직] #${srv.id} ${srv.name} ${AUDIENCE_LABEL[kind]} 동기화 실패: ${message}`);
+      patch = { [k.error]: message };
+    }
+    const latest = srv.store.chzzkOwner();
+    if (latest?.connectedAt === owner.connectedAt) srv.store.setChzzkOwner({ ...latest, ...patch });
+  }
 
   async function run(srv: ServerRuntime): Promise<void> {
     let owner = srv.store.chzzkOwner();
@@ -85,17 +109,16 @@ export function createChzzkSubscribers(config: Config, fleet: Fleet) {
         owner = { ...owner, ...token };
         srv.store.setChzzkOwner(owner);
       }
-      const ids = await subscribers(owner.accessToken);
-      if (!still(srv, owner)) return;
-      srv.store.replaceSubscribers(ids);
-      srv.store.setChzzkOwner({ ...owner, syncedAt: Date.now(), count: ids.length, error: null });
-      srv.poller.nudge();
     } catch (err) {
       const message = errorMessage(err);
-      console.error(`[치지직] #${srv.id} ${srv.name} 구독자 동기화 실패: ${message}`);
+      console.error(`[치지직] #${srv.id} ${srv.name} 토큰 갱신 실패: ${message}`);
       const latest = srv.store.chzzkOwner();
-      if (latest?.connectedAt === owner.connectedAt) srv.store.setChzzkOwner({ ...latest, error: message });
+      if (latest?.connectedAt === owner.connectedAt) srv.store.setChzzkOwner({ ...latest, error: message, followerError: message });
+      return;
     }
+    await syncAudience(srv, owner, 'subscriber');
+    await syncAudience(srv, owner, 'follower');
+    srv.poller.nudge();
   }
 
   function sync(srv: ServerRuntime): Promise<void> {
@@ -112,8 +135,9 @@ export function createChzzkSubscribers(config: Config, fleet: Fleet) {
     if (prev && prev.refreshToken !== token.refreshToken) chzzkRevoke(config, prev.refreshToken, 'refresh_token');
     srv.store.setChzzkOwner({
       ...token, channelId: channel.id, channelName: channel.name, connectedBy: by, connectedAt: Date.now(), syncedAt: null, count: 0, error: null,
+      followerSyncedAt: null, followerCount: 0, followerError: null,
     });
-    if (prev?.channelId !== channel.id) srv.store.replaceSubscribers([]);
+    if (prev?.channelId !== channel.id) clearAudience(srv);
     return (running.get(srv.id) ?? Promise.resolve()).then(() => sync(srv));
   }
 
@@ -121,7 +145,12 @@ export function createChzzkSubscribers(config: Config, fleet: Fleet) {
     const prev = srv.store.chzzkOwner();
     if (prev) chzzkRevoke(config, prev.refreshToken, 'refresh_token');
     srv.store.setChzzkOwner(null);
-    srv.store.replaceSubscribers([]);
+    clearAudience(srv);
+  }
+
+  function clearAudience(srv: ServerRuntime): void {
+    srv.store.replaceAudience('subscriber', []);
+    srv.store.replaceAudience('follower', []);
   }
 
   return {

@@ -15,7 +15,7 @@ export async function openPlayerById(steamId: string, known: { name?: string | n
   if (live) return openPlayer(live);
   const offline: Player = {
     steamId, name: known.name || steamId, kills: 0, deaths: 0, pingMs: 0, joinedAt: null,
-    link: known.link ?? null, subscriber: false, streamer: null, avatar: null,
+    link: known.link ?? null, subscriber: false, follower: false, streamer: null, avatar: null,
   };
   return openPlayer(offline, false);
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { ChzzkOwner, LinkRow, OrError, Streamer, Whitelist, WhitelistBan, WhitelistMode } from '../lib/types.ts';
+import type { ChzzkOwner, LinkRow, OrError, Player, Streamer, Whitelist, WhitelistAudience, WhitelistBan, WhitelistMode } from '../lib/types.ts';
 import { useStore, can, getState } from '../lib/store.ts';
 import { api, run, errorMessage } from '../lib/api.ts';
 import { confirmAction } from '../lib/modal.tsx';
@@ -14,9 +14,12 @@ import { faRotateRight } from '@fortawesome/free-solid-svg-icons';
 import { PlayerName } from '../components/playerName.tsx';
 
 const WHITELIST_LABEL: Record<WhitelistMode, string> = { off: '꺼짐', kick: '미연동 킥', ban: '미연동 밴' };
+const AUDIENCE_LABEL: Record<WhitelistAudience, string> = { linked: '계정 연동', follower: '치지직 팔로워', subscriber: '치지직 구독자' };
+const BLOCKED_LABEL: Record<WhitelistAudience, string> = { linked: '미연동', follower: '미연동·미팔로우', subscriber: '미연동·미구독' };
+const passes = (p: Player, audience: WhitelistAudience) => !!p.link && (audience === 'linked' || (audience === 'follower' ? p.follower : p.subscriber));
 
 const OWNER_RESULTS: Record<string, { ok: boolean; text: string }> = {
-  linked: { ok: true, text: '치지직 채널을 연결했습니다. 구독자 목록을 받아오는 중입니다.' },
+  linked: { ok: true, text: '치지직 채널을 연결했습니다. 팔로워·구독자 목록을 받아오는 중입니다.' },
   denied: { ok: false, text: '이 서버의 관리자만 채널을 연결할 수 있습니다.' },
   cancelled: { ok: false, text: '치지직 로그인을 취소했습니다.' },
   expired: { ok: false, text: '로그인이 만료되었습니다. 다시 시도해주세요.' },
@@ -74,7 +77,7 @@ export default function Links() {
       <div className="stack">
         {notice ? <div className={`banner ${notice.ok ? 'banner-ok' : 'banner-error'}`} role="status">{notice.text}</div> : null}
         <Card title="미연동 유저 차단">{wl ? <WhitelistForm wl={wl} onSaved={load} /> : <Empty><Spinner /></Empty>}</Card>
-        <Card title="구독자">{wl ? <OwnerForm owner={wl.owner} onChanged={load} /> : <Empty><Spinner /></Empty>}</Card>
+        <Card title="치지직 팔로워·구독자">{wl ? <OwnerForm owner={wl.owner} onChanged={load} /> : <Empty><Spinner /></Empty>}</Card>
         <Card title="미등록 유저 밴"><div className="card-body"><WhitelistBans list={wl?.bans} /></div></Card>
       </div>
     </div>
@@ -114,20 +117,25 @@ function LinkTable({ rows, onChanged }: { rows: LinkRow[]; onChanged: () => void
 function WhitelistForm({ wl, onSaved }: { wl: Whitelist; onSaved: () => void }) {
   const [mode, setMode] = useState(wl.mode);
   const [message, setMessage] = useState(wl.message);
-  const [subscribers, setSubscribers] = useState(wl.subscribers);
+  const [audience, setAudience] = useState(wl.audience);
   const editable = can('admin');
   const players = (useStore((s) => s.live)?.players || []).filter((p) => p.steamId && !p.streamer);
-  const blockedOnline = players.filter((p) => !p.link || (subscribers && !p.subscriber)).length;
+  const blocked = (a: WhitelistAudience) => players.filter((p) => !passes(p, a)).length;
+  const blockedOnline = blocked(audience);
   const messageEditable = editable && mode !== 'off';
-  const canSubscribe = !!wl.owner?.syncedAt || wl.subscribers;
-  const dirty = mode !== wl.mode || subscribers !== wl.subscribers || (messageEditable && message !== wl.message);
-  const stricter = (mode !== 'off' && mode !== wl.mode) || (mode !== 'off' && subscribers && !wl.subscribers);
+  const available: Record<WhitelistAudience, boolean> = {
+    linked: true,
+    follower: !!wl.owner?.followerSyncedAt || wl.audience === 'follower',
+    subscriber: !!wl.owner?.syncedAt || wl.audience === 'subscriber',
+  };
+  const dirty = mode !== wl.mode || audience !== wl.audience || (messageEditable && message !== wl.message);
+  const stricter = mode !== 'off' && (mode !== wl.mode || blockedOnline > blocked(wl.audience));
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
     if (stricter && blockedOnline > 0 && !(await confirmAction('미연동 유저 차단 켜기',
-      `지금 접속 중인 ${subscribers ? '미연동·미구독' : '미연동'} 플레이어 ${blockedOnline}명이 바로 ${mode === 'ban' ? '밴·킥' : '킥'}됩니다.`, { confirm: '적용' }))) return;
-    if (await run('미연동 유저 차단', 'PUT', '/api/whitelist', { mode, subscribers, message: mode === 'off' ? wl.message : message.trim() })) onSaved();
+      `지금 접속 중인 ${BLOCKED_LABEL[audience]} 플레이어 ${blockedOnline}명이 바로 ${mode === 'ban' ? '밴·킥' : '킥'}됩니다.`, { confirm: '적용' }))) return;
+    if (await run('미연동 유저 차단', 'PUT', '/api/whitelist', { mode, audience, message: mode === 'off' ? wl.message : message.trim() })) onSaved();
   };
 
   return (
@@ -137,13 +145,20 @@ function WhitelistForm({ wl, onSaved }: { wl: Whitelist; onSaved: () => void }) 
           <button key={id} type="button" role="radio" aria-checked={mode === id} className={mode === id ? 'on' : ''} disabled={!editable} onClick={() => setMode(id)}>{label}</button>
         ))}
       </div>
-      <label className="check">
-        <input type="checkbox" checked={subscribers} disabled={!editable || (!subscribers && !canSubscribe)} onChange={(e) => setSubscribers(e.target.checked)} />
-        <span>치지직 구독자만 허용{wl.owner ? ` (${wl.owner.channelName})` : ''}</span>
-      </label>
-      {!canSubscribe ? <p className="muted small">아래에서 치지직 채널을 연결하면 켤 수 있습니다.</p> : null}
+      <div className="field">
+        <span className="field-label"><span>{`입장 조건${wl.owner ? ` (${wl.owner.channelName})` : ''}`}</span></span>
+        <div className="seg" role="radiogroup" aria-label="입장 조건">
+          {(Object.entries(AUDIENCE_LABEL) as [WhitelistAudience, string][]).map(([id, label]) => (
+            <button key={id} type="button" role="radio" aria-checked={audience === id} className={audience === id ? 'on' : ''}
+              disabled={!editable || !available[id]} onClick={() => setAudience(id)}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {!available.follower || !available.subscriber ? (
+        <p className="muted small">{wl.owner ? '치지직 팔로워·구독자 조건은 아래 채널에서 해당 목록을 한 번 받아온 뒤에 고를 수 있습니다.' : '아래에서 치지직 채널을 연결하면 팔로워·구독자 조건을 고를 수 있습니다.'}</p>
+      ) : null}
       <KickMessage label="안내 문구 (킥·밴 사유)" rows={3} value={mode === 'off' ? wl.message : message} disabled={!messageEditable} onChange={setMessage} />
-      {mode !== 'off' ? <p className="small">{`접속 중인 ${subscribers ? '미연동·미구독' : '미연동'} 플레이어 ${blockedOnline}명`}</p> : null}
+      {mode !== 'off' ? <p className="small">{`접속 중인 ${BLOCKED_LABEL[audience]} 플레이어 ${blockedOnline}명`}</p> : null}
       {editable ? <div><button className="btn" type="submit" disabled={!dirty || (messageEditable && !message.trim())}>저장</button></div> : null}
     </form>
   );
@@ -156,19 +171,19 @@ function OwnerForm({ owner, onChanged }: { owner: ChzzkOwner | null; onChanged: 
 
   const sync = async () => {
     setSyncing(true);
-    await run('구독자 목록 동기화', 'POST', '/api/chzzk-owner/sync');
+    await run('팔로워·구독자 목록 동기화', 'POST', '/api/chzzk-owner/sync');
     setSyncing(false);
     onChanged();
   };
   const disconnect = async () => {
-    if (!(await confirmAction('채널 연결 해제', '구독자 목록을 지우고 "치지직 구독자만 허용"을 끕니다.', { confirm: '해제' }))) return;
+    if (!(await confirmAction('채널 연결 해제', '팔로워·구독자 목록을 지우고 입장 조건을 "계정 연동"으로 되돌립니다.', { confirm: '해제' }))) return;
     if (await run('채널 연결 해제', 'DELETE', '/api/chzzk-owner')) onChanged();
   };
 
   if (!owner) {
     return (
       <div className="card-body stack">
-        <p className="muted small">스트리머 본인이 치지직으로 로그인하면, 그 채널의 구독자 목록을 3분마다 받아와 화이트리스트 조건으로 쓸 수 있습니다.</p>
+        <p className="muted small">스트리머 본인이 치지직으로 로그인하면, 그 채널의 팔로워·구독자 목록을 3분마다 받아와 화이트리스트 조건으로 쓸 수 있습니다.</p>
         {editable ? <div><a className="btn" href={connect}>스트리머 치지직 연결</a></div> : null}
       </div>
     );
@@ -180,8 +195,11 @@ function OwnerForm({ owner, onChanged }: { owner: ChzzkOwner | null; onChanged: 
         <dd><span className="tag tag-chzzk">{owner.channelName}</span></dd>
         <dt>구독자</dt>
         <dd>{owner.syncedAt ? `${owner.count}명 · ${fmtTime(owner.syncedAt)} 기준` : '받아오는 중'}</dd>
+        <dt>팔로워</dt>
+        <dd>{owner.followerSyncedAt ? `${owner.followerCount}명 · ${fmtTime(owner.followerSyncedAt)} 기준` : '받아오는 중'}</dd>
       </dl>
-      {owner.error ? <div className="small danger">{`동기화 실패 (마지막 목록 유지 중): ${owner.error}`}</div> : null}
+      {owner.error ? <div className="small danger">{`구독자 동기화 실패 (마지막 목록 유지 중): ${owner.error}`}</div> : null}
+      {owner.followerError ? <div className="small danger">{`팔로워 동기화 실패 (마지막 목록 유지 중): ${owner.followerError}`}</div> : null}
       {editable ? (
         <div className="toolbar">
           <button className="btn" type="button" disabled={syncing} onClick={sync}>{syncing ? '받아오는 중' : '지금 동기화'}</button>

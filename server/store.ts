@@ -250,6 +250,11 @@ const SERVER_TABLES: Record<string, string> = {
   channel_id TEXT NOT NULL,
   PRIMARY KEY (server_id, channel_id)
 )`,
+  chzzk_followers: `CREATE TABLE IF NOT EXISTS chzzk_followers (
+  server_id INTEGER NOT NULL,
+  channel_id TEXT NOT NULL,
+  PRIMARY KEY (server_id, channel_id)
+)`,
   discord_releases: `CREATE TABLE IF NOT EXISTS discord_releases (
   server_id INTEGER NOT NULL,
   steam_id TEXT NOT NULL,
@@ -299,12 +304,17 @@ export type IdentityProvider = (typeof IDENTITY_PROVIDERS)[number];
 
 export const WHITELIST_MODES = ['off', 'kick', 'ban'] as const;
 export type WhitelistMode = (typeof WHITELIST_MODES)[number];
+export const WHITELIST_AUDIENCES = ['linked', 'follower', 'subscriber'] as const;
+export type WhitelistAudience = (typeof WHITELIST_AUDIENCES)[number];
 export interface Whitelist {
   mode: WhitelistMode;
   message: string;
-  subscribers: boolean;
+  audience: WhitelistAudience;
 }
-const WHITELIST_DEFAULT: Whitelist = { mode: 'off', message: '화이트리스트에 등록되지 않은 유저입니다.', subscribers: false };
+const WHITELIST_DEFAULT: Whitelist = { mode: 'off', message: '화이트리스트에 등록되지 않은 유저입니다.', audience: 'linked' };
+
+export type ChzzkAudience = Exclude<WhitelistAudience, 'linked'>;
+const AUDIENCE_TABLE: Record<ChzzkAudience, string> = { follower: 'chzzk_followers', subscriber: 'chzzk_subscribers' };
 
 export interface ChzzkOwner {
   channelId: string;
@@ -317,6 +327,9 @@ export interface ChzzkOwner {
   syncedAt: number | null;
   count: number;
   error: string | null;
+  followerSyncedAt?: number | null;
+  followerCount?: number;
+  followerError?: string | null;
 }
 
 export interface EntryGate {
@@ -1293,7 +1306,8 @@ export class ServerStore {
   }
 
   whitelist(): Whitelist {
-    return { ...WHITELIST_DEFAULT, ...this.#setting('whitelist', {}) };
+    const { subscribers, ...v } = this.#setting<Partial<Whitelist> & { subscribers?: boolean }>('whitelist', {});
+    return { ...WHITELIST_DEFAULT, ...(subscribers ? { audience: 'subscriber' as const } : {}), ...v };
   }
 
   setWhitelist(value: Whitelist): void {
@@ -1334,28 +1348,38 @@ export class ServerStore {
     this.#setSetting('chzzk_owner', { ...o, accessToken: this.root.sealSecret(o.accessToken), refreshToken: this.root.sealSecret(o.refreshToken) });
   }
 
-  replaceSubscribers(channelIds: string[]): void {
+  replaceAudience(kind: ChzzkAudience, channelIds: string[]): void {
+    const table = AUDIENCE_TABLE[kind];
     this.root.tx(() => {
-      this.#run('DELETE FROM chzzk_subscribers WHERE server_id = ?');
-      for (const id of new Set(channelIds)) this.#run('INSERT INTO chzzk_subscribers (server_id, channel_id) VALUES (?, ?)', id);
+      this.#run(`DELETE FROM ${table} WHERE server_id = ?`);
+      for (const id of new Set(channelIds)) this.#run(`INSERT INTO ${table} (server_id, channel_id) VALUES (?, ?)`, id);
     });
   }
 
-  subscribedOf(channelIds: string[]): Set<string> {
+  audienceOf(kind: ChzzkAudience, channelIds: string[]): Set<string> {
     if (!channelIds.length) return new Set();
-    return new Set(this.#all('SELECT channel_id FROM chzzk_subscribers WHERE server_id = ? AND channel_id IN (SELECT value FROM json_each(?))',
-      JSON.stringify(channelIds)).map((r) => r.channel_id));
+    const tables = kind === 'follower' ? ['chzzk_followers', 'chzzk_subscribers'] : ['chzzk_subscribers'];
+    const sql = tables.map((t) => `SELECT channel_id FROM ${t} WHERE server_id = ?1 AND channel_id IN (SELECT value FROM json_each(?2))`).join(' UNION ');
+    return new Set(this.#all(sql, JSON.stringify(channelIds)).map((r) => r.channel_id));
+  }
+
+  passes(chzzkChannelId: string): boolean {
+    const { audience } = this.whitelist();
+    return audience === 'linked' || this.audienceOf(audience, [chzzkChannelId]).size > 0;
   }
 
   whitelistBans(): WhitelistBan[] {
-    const subscribers = this.whitelist().subscribers ? 1 : 0;
+    const { audience } = this.whitelist();
+    const inAudience = audience === 'linked' ? '1'
+      : audience === 'follower' ? '(s.channel_id IS NOT NULL OR f.channel_id IS NOT NULL)' : 's.channel_id IS NOT NULL';
     return this.root.prep(`SELECT w.steam_id AS steamId, w.name, w.created_at AS createdAt, w.last_error AS lastError,
-        (d.steam_id IS NOT NULL OR (a.steam_id IS NOT NULL AND (? = 0 OR s.channel_id IS NOT NULL))) AS linked
+        (d.steam_id IS NOT NULL OR (a.steam_id IS NOT NULL AND ${inAudience})) AS linked
       FROM whitelist_bans w LEFT JOIN account_links a ON a.steam_id = w.steam_id
       LEFT JOIN discord_links d ON d.server_id = w.server_id AND d.steam_id = w.steam_id
       LEFT JOIN chzzk_subscribers s ON s.server_id = w.server_id AND s.channel_id = a.chzzk_channel_id
+      LEFT JOIN chzzk_followers f ON f.server_id = w.server_id AND f.channel_id = a.chzzk_channel_id
       WHERE w.server_id = ?
-      ORDER BY w.created_at DESC`).all(subscribers, this.id).map((r) => ({ ...r, linked: !!r.linked }) as WhitelistBan);
+      ORDER BY w.created_at DESC`).all(this.id).map((r) => ({ ...r, linked: !!r.linked }) as WhitelistBan);
   }
 
   addWhitelistBan(steamId: string, name: string | null | undefined): void {

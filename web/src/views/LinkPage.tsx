@@ -13,10 +13,10 @@ interface LinkState {
   link: Link | null;
   joins: { id: number; name: string; url: string }[];
   server: ServerInfo | null;
-  access: 'ok' | 'link' | 'subscribe' | null;
+  access: 'ok' | 'link' | 'follow' | 'subscribe' | null;
 }
 
-type EntryRule = 'open' | 'linked' | 'subscribers';
+type EntryRule = 'open' | 'linked' | 'follower' | 'subscriber';
 interface ServerInfo {
   name: string;
   joinCode: string;
@@ -99,9 +99,11 @@ export default function LinkPage({ code, onServer }: { code: string | null; onSe
       {!st ? <p className="empty"><Spinner /></p> : (
         <>
           {st.access === 'ok' && server?.rule !== 'open' ? <div className="banner banner-ok" role="status">입장할 수 있습니다.</div> : null}
-          {st.access === 'subscribe' ? (
+          {st.access === 'follow' || st.access === 'subscribe' ? (
             <div className="banner banner-warn" role="status">
-              {`치지직 ${server?.channel ?? '스트리머'} 채널 구독자만 입장할 수 있습니다. 구독하면 3분 안에 반영됩니다.`}
+              {st.access === 'follow'
+                ? `치지직 ${server?.channel ?? '스트리머'} 채널 팔로워만 입장할 수 있습니다. 팔로우하면 3분 안에 반영됩니다.`
+                : `치지직 ${server?.channel ?? '스트리머'} 채널 구독자만 입장할 수 있습니다. 구독하면 3분 안에 반영됩니다.`}
             </div>
           ) : null}
 
@@ -146,7 +148,7 @@ export default function LinkPage({ code, onServer }: { code: string | null; onSe
               {st.joins.length > 1 ? `${j.name} 접속` : '서버 접속'}
             </a>
           ))}
-          {link && !st.joins.length && st.access !== 'subscribe' ? <p className="public-lead small">지금은 서버에 접속할 수 없습니다.</p> : null}
+          {link && !st.joins.length && st.access !== 'follow' && st.access !== 'subscribe' ? <p className="public-lead small">지금은 서버에 접속할 수 없습니다.</p> : null}
 
         </>
       )}
@@ -154,7 +156,7 @@ export default function LinkPage({ code, onServer }: { code: string | null; onSe
   );
 }
 
-const RULE_LABEL: Record<EntryRule, string> = { open: '누구나 입장', linked: '계정 연동 필요', subscribers: '연동 + 구독 필요' };
+const RULE_LABEL: Record<EntryRule, string> = { open: '누구나 입장', linked: '계정 연동 필요', follower: '연동 + 팔로우 필요', subscriber: '연동 + 구독 필요' };
 
 function ServerHead({ server }: { server: ServerInfo }) {
   const players = server.maxPlayers ? `${server.players}/${server.maxPlayers}명` : `${server.players}명`;
@@ -166,7 +168,7 @@ function ServerHead({ server }: { server: ServerInfo }) {
       </p>
       <p className="server-rule small">
         <span className="tag">{RULE_LABEL[server.rule]}</span>
-        {server.rule === 'subscribers' && server.channel ? <span className="tag tag-chzzk">{server.channel}</span> : null}
+        {(server.rule === 'follower' || server.rule === 'subscriber') && server.channel ? <span className="tag tag-chzzk">{server.channel}</span> : null}
       </p>
     </div>
   );

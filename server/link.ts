@@ -93,7 +93,7 @@ export interface PublicServer {
   passes(link: Link): boolean;
 }
 
-type EntryRule = 'open' | 'linked' | 'subscribers';
+type EntryRule = 'open' | 'linked' | 'follower' | 'subscriber';
 
 export const joinUrl = (code: string) => `${JOIN_URL}?${new URLSearchParams({ key: `id|${code}` })}`;
 
@@ -513,7 +513,7 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
     const { rule } = only.entry();
     if (rule === 'open') return 'ok';
     if (!link) return 'link';
-    return only.passes(link) ? 'ok' : 'subscribe';
+    return only.passes(link) ? 'ok' : rule === 'follower' ? 'follow' : 'subscribe';
   };
 
   const serverView = (only: PublicServer | null) => only && { name: only.name, joinCode: only.joinCode, ...only.status(), ...only.entry() };

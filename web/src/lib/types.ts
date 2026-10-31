@@ -78,6 +78,7 @@ export interface Player {
   joinedAt: number | null;
   link: Link | null;
   subscriber: boolean;
+  follower: boolean;
   streamer: Streamer | null;
   avatar: string | null;
 }
@@ -281,6 +282,7 @@ export interface WhitelistBan {
 }
 
 export type WhitelistMode = 'off' | 'kick' | 'ban';
+export type WhitelistAudience = 'linked' | 'follower' | 'subscriber';
 
 export interface ChzzkOwner {
   channelId: string;
@@ -289,12 +291,15 @@ export interface ChzzkOwner {
   syncedAt: number | null;
   count: number;
   error: string | null;
+  followerSyncedAt: number | null;
+  followerCount: number;
+  followerError: string | null;
 }
 
 export interface Whitelist {
   mode: WhitelistMode;
   message: string;
-  subscribers: boolean;
+  audience: WhitelistAudience;
   bans: WhitelistBan[];
   owner: ChzzkOwner | null;
 }

@@ -1,8 +1,8 @@
 import { hasRole } from './auth.ts';
 import { HttpError, readBody, errorMessage, requireText, requireSteamId, STEAM_ID } from './http.ts';
 import type { Router, Handler, Body } from './http.ts';
-import { WHITELIST_MODES, newFeedToken } from './store.ts';
-import type { Store, WhitelistMode, FeedRequest } from './store.ts';
+import { WHITELIST_MODES, WHITELIST_AUDIENCES, newFeedToken } from './store.ts';
+import type { Store, WhitelistMode, WhitelistAudience, FeedRequest } from './store.ts';
 import type { Role, Session } from './auth.ts';
 import type { RconError, MapSelection } from './rcon.ts';
 import type { RotationSelection, RotationSettings } from './inidoc.ts';
@@ -233,14 +233,18 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     if (!WHITELIST_MODES.includes(mode)) throw new HttpError(400, 'bad_mode', '모드는 off, kick, ban 중 하나입니다');
     const prev = srv.store.whitelist();
     const message = mode === 'off' ? prev.message : requireText(body.message, '안내 문구', MAX_REASON);
-    const subscribers = body.subscribers === undefined ? prev.subscribers : !!body.subscribers;
-    if (subscribers && !prev.subscribers && !srv.store.chzzkOwner()?.syncedAt) {
-      throw new HttpError(409, 'no_subscribers', '치지직 채널을 연결하고 구독자 목록을 한 번 이상 받아온 뒤에 켤 수 있습니다');
+    const audience = (body.audience ?? prev.audience) as WhitelistAudience;
+    if (!WHITELIST_AUDIENCES.includes(audience)) throw new HttpError(400, 'bad_audience', '입장 조건은 linked, follower, subscriber 중 하나입니다');
+    if (audience !== prev.audience && audience !== 'linked') {
+      const owner = srv.store.chzzkOwner();
+      const synced = audience === 'subscriber' ? owner?.syncedAt : owner?.followerSyncedAt;
+      const label = audience === 'subscriber' ? '구독자' : '팔로워';
+      if (!synced) throw new HttpError(409, 'no_audience', `치지직 채널을 연결하고 ${label} 목록을 한 번 이상 받아온 뒤에 켤 수 있습니다`);
     }
-    return act(srv, session, 'whitelist_update', mode, { message, subscribers }, async () => {
-      srv.store.setWhitelist({ mode, message, subscribers });
+    return act(srv, session, 'whitelist_update', mode, { message, audience }, async () => {
+      srv.store.setWhitelist({ mode, message, audience });
       srv.poller.nudge();
-      return { mode, message, subscribers };
+      return { mode, message, audience };
     });
   });
 
@@ -254,7 +258,7 @@ export function registerApi(router: Router, ctx: ApiContext): void {
     const prev = srv.store.chzzkOwner();
     if (!prev) return { ok: true };
     return act(srv, session, 'chzzk_owner_disconnect', prev.channelId, { name: prev.channelName }, async () => {
-      srv.store.setWhitelist({ ...srv.store.whitelist(), subscribers: false });
+      srv.store.setWhitelist({ ...srv.store.whitelist(), audience: 'linked' });
       subscribers.disconnect(srv);
       srv.poller.nudge();
       return { ok: true };
