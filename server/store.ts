@@ -1359,8 +1359,9 @@ export class ServerStore {
   audienceOf(kind: ChzzkAudience, channelIds: string[]): Set<string> {
     if (!channelIds.length) return new Set();
     const tables = kind === 'follower' ? ['chzzk_followers', 'chzzk_subscribers'] : ['chzzk_subscribers'];
-    const sql = tables.map((t) => `SELECT channel_id FROM ${t} WHERE server_id = ?1 AND channel_id IN (SELECT value FROM json_each(?2))`).join(' UNION ');
-    return new Set(this.#all(sql, JSON.stringify(channelIds)).map((r) => r.channel_id));
+    const source = tables.map((t) => `SELECT server_id, channel_id FROM ${t}`).join(' UNION ALL ');
+    return new Set(this.#all(`SELECT channel_id FROM (${source}) WHERE server_id = ? AND channel_id IN (SELECT value FROM json_each(?))`,
+      JSON.stringify(channelIds)).map((r) => r.channel_id));
   }
 
   passes(chzzkChannelId: string): boolean {
