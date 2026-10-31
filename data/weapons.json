@@ -1,5 +1,13 @@
 {
   "Id.Item.AK74": "AK74",
+  "Id.Item.AKM": "AKM",
+  "Id.Item.G36C": "G36C",
+  "Id.Item.Glock17": "Glock17",
+  "Id.Item.Knife": "Knife",
+  "Id.Item.M24": "M24",
+  "Id.Item.M249": "M249",
   "Id.Item.M4A1_Block2": "M4A1 Block2",
-  "Id.Item.RPG7": "RPG7"
+  "Id.Item.PKM": "PKM",
+  "Id.Item.RPG7": "RPG7",
+  "Id.Item.SVD": "SVD"
 }
