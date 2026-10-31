@@ -3,11 +3,16 @@ import {
   parseRotationEntry, formatRotationEntry, sameSelection, getValue, setValue,
 } from './inidoc.ts';
 import type { RotationSelection, RotationSettings } from './inidoc.ts';
+import { fetch } from 'undici';
+import type { RequestInit, Response } from 'undici';
+import { publicOnly, isPrivateLiteral } from './netguard.ts';
 
 const SCORE_SECTION = 'MatchState.Playing.KOTH';
 const SESSION_SECTION = '/Script/WDGame.WDGameSession';
 const SPONSOR_KEY = 'ServerImageURL';
 const SCORE_KEY = 'ScorePeriod';
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_ERROR_TEXT = 300;
 
 type Json = Record<string, any>;
 
@@ -100,19 +105,40 @@ interface RequestOptions {
   query?: Record<string, string | number | undefined>;
 }
 
+async function readCapped(res: Response): Promise<string> {
+  if (Number(res.headers.get('content-length')) > MAX_BODY_BYTES) {
+    await res.body?.cancel().catch(() => {});
+    throw new RconError(502, 'body_too_large', 'RCON 응답이 너무 큽니다');
+  }
+  if (!res.body) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of res.body) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      await res.body.cancel().catch(() => {});
+      throw new RconError(502, 'body_too_large', 'RCON 응답이 너무 큽니다');
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export class RconClient {
   baseUrl: string;
   password: string;
   timeoutMs: number;
+  allowPrivate: boolean;
   holdUntil = 0;
   capabilities: Capabilities | null = null;
   routes = new Set<string>();
   features = RconClient.noFeatures();
 
-  constructor({ baseUrl, password, timeoutMs = 8000 }: { baseUrl: string; password: string; timeoutMs?: number }) {
+  constructor({ baseUrl, password, timeoutMs = 8000, allowPrivate = false }: { baseUrl: string; password: string; timeoutMs?: number; allowPrivate?: boolean }) {
     this.baseUrl = baseUrl;
     this.password = password;
     this.timeoutMs = timeoutMs;
+    this.allowPrivate = allowPrivate;
   }
 
   setTarget(url: string, password: string): void {
@@ -147,11 +173,13 @@ export class RconClient {
     }
     const url = new URL(this.baseUrl + path);
     if (query) for (const [k, v] of Object.entries(query)) if (v !== undefined) url.searchParams.set(k, String(v));
+    if (!this.allowPrivate && isPrivateLiteral(url)) throw new RconError(0, 'private_host', 'RCON 연결 실패: 내부망·사설 IP 주소는 쓸 수 없습니다');
     const init: RequestInit & { headers: Record<string, string> } = {
       method,
       headers: { Authorization: `Bearer ${this.password}`, ...headers },
       signal: AbortSignal.timeout(this.timeoutMs),
       redirect: 'manual',
+      ...(!this.allowPrivate && { dispatcher: publicOnly }),
     };
     if (json !== undefined) {
       init.headers['Content-Type'] = 'application/json';
@@ -166,6 +194,7 @@ export class RconClient {
       res = await fetch(url, init);
     } catch (err) {
       const e = err as Error & { cause?: { code?: string } };
+      if (e.cause?.code === 'EPRIVATE') throw new RconError(0, 'private_host', 'RCON 연결 실패: 주소가 내부망·사설 IP로 바뀌어 연결을 막았습니다');
       const code = e.name === 'TimeoutError' ? 'timeout' : 'unreachable';
       throw new RconError(0, code, `RCON 연결 실패: ${e.cause?.code || e.message}`);
     }
@@ -175,19 +204,19 @@ export class RconClient {
       this.holdUntil = Date.now() + (Number.isFinite(sec) && sec > 0 ? Math.min(sec, 60) : 5) * 1000;
     }
 
-    const raw = await res.text();
+    const raw = await readCapped(res);
     let body: Json | null = null;
     if (raw) {
       try {
         body = JSON.parse(raw);
       } catch {
-        body = { message: raw };
+        body = { message: raw.slice(0, MAX_ERROR_TEXT) };
       }
     }
     if (!res.ok) {
       const e = body?.error ?? {};
       const code = e.code === 'not_found' ? 'no_route' : e.code;
-      throw new RconError(res.status, code, e.message || body?.message || `요청 실패 (${res.status})`, body);
+      throw new RconError(res.status, code, String(e.message || body?.message || `요청 실패 (${res.status})`).slice(0, MAX_ERROR_TEXT), body);
     }
     return { status: res.status, body: body ?? {}, etag: res.headers.get('etag') };
   }

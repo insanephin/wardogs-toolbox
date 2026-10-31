@@ -568,6 +568,8 @@ export interface Identity {
   linkedAt: number;
 }
 
+const MAX_GUEST_SESSIONS = 300;
+
 export const newFeedToken = () => randomBytes(24).toString('base64url');
 
 interface StoreOptions {
@@ -838,6 +840,10 @@ export class Store {
     this.prep('DELETE FROM panel_sessions WHERE expires < ?').run(Date.now());
     this.prep('INSERT INTO panel_sessions (token_hash, steam_id, name, guest, expires) VALUES (?, ?, ?, ?, ?)')
       .run(tokenHash, s.steamId, s.name, s.guest ? 1 : 0, s.expires);
+    if (s.guest) {
+      this.prep(`DELETE FROM panel_sessions WHERE guest = 1 AND token_hash NOT IN
+        (SELECT token_hash FROM panel_sessions WHERE guest = 1 ORDER BY expires DESC LIMIT ?)`).run(MAX_GUEST_SESSIONS);
+    }
   }
 
   session(tokenHash: string): StoredSession | null {
@@ -919,6 +925,12 @@ export class Store {
 
   reportImagesBytes(): number {
     return Number((this.prep('SELECT COALESCE(SUM(size), 0) AS n FROM report_images').get() as Row).n);
+  }
+
+  reportImagesBytesBy(steamId: string, since: number): number {
+    return Number((this.prep(`SELECT COALESCE(SUM(i.size), 0) AS n FROM report_images i
+      JOIN reports r ON r.id = i.report_id AND r.server_id = i.server_id
+      WHERE r.reporter_steam_id = ? AND i.created_at >= ?`).get(steamId, since) as Row).n);
   }
 
   expiredReportImages(before: number): { id: number; file: string }[] {
@@ -1121,6 +1133,10 @@ export class ServerStore {
   addReportImage(reportId: number, file: string, mime: string, size: number, at: number): number {
     return Number(this.#run('INSERT INTO report_images (server_id, report_id, file, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       reportId, file, mime, size, at).lastInsertRowid);
+  }
+
+  hasPlayed(steamId: string): boolean {
+    return !!this.#get('SELECT 1 FROM players WHERE server_id = ? AND steam_id = ?', steamId);
   }
 
   reportImageCount(reportId: number): number {

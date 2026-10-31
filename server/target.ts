@@ -1,25 +1,13 @@
 import { lookup } from 'node:dns/promises';
-import { BlockList, isIP } from 'node:net';
+import { isIP } from 'node:net';
 import { HttpError } from './http.ts';
 import { RconClient } from './rcon.ts';
+import { isPrivate } from './netguard.ts';
 import type { RconError } from './rcon.ts';
 import type { Session } from './auth.ts';
 
 const PROBES_PER_WINDOW = 10;
 const PROBE_WINDOW_MS = 10 * 60_000;
-
-const PRIVATE = new BlockList();
-for (const [net, bits] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
-  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 3]] as const) {
-  PRIVATE.addSubnet(net, bits, 'ipv4');
-}
-for (const [net, bits] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]] as const) PRIVATE.addSubnet(net, bits, 'ipv6');
-
-function isPrivate(address: string): boolean {
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address)?.[1];
-  if (mapped) return PRIVATE.check(mapped, 'ipv4');
-  return PRIVATE.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4');
-}
 
 async function requirePublicHost(url: string): Promise<void> {
   const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
@@ -36,13 +24,14 @@ async function requirePublicHost(url: string): Promise<void> {
 
 export async function probeRcon(url: string, password: string, { allowPrivate = false } = {}): Promise<{ gameName: string | null }> {
   if (!allowPrivate) await requirePublicHost(url);
-  const rcon = new RconClient({ baseUrl: url, password, timeoutMs: 6000 });
+  const rcon = new RconClient({ baseUrl: url, password, timeoutMs: 6000, allowPrivate });
   try {
     await rcon.loadCapabilities();
     const status = await rcon.status();
     return { gameName: status.serverName ?? null };
   } catch (err) {
     const e = err as RconError;
+    if (e.code === 'private_host') throw new HttpError(400, 'private_rcon_host', '내부망·사설 IP 주소는 쓸 수 없습니다. 게임 서버의 공인 IP나 도메인을 입력하세요');
     if (e.status === 401 || e.status === 403) throw new HttpError(400, 'rcon_auth', 'RCON 비밀번호가 맞지 않습니다');
     if (e.code === 'timeout' || e.code === 'unreachable') {
       throw new HttpError(400, 'rcon_unreachable', '서버에 연결할 수 없습니다. 주소·RCON 포트(기본 7776)·방화벽, AllowedHosts 설정을 확인하세요');

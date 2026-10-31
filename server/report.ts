@@ -27,6 +27,7 @@ const MAX_NOTE = 500;
 const MAX_IMAGES = 3;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_QUOTA_BYTES = 5 * 1024 ** 3;
+const DAILY_IMAGE_BYTES = 50 * 1024 * 1024;
 const UPLOAD_WINDOW_MS = 15 * 60_000;
 const IMAGE_KEEP_MS = 30 * 86400_000;
 const CSRF_HEADER = 'x-requested-with';
@@ -169,6 +170,10 @@ export function registerReports(router: Router, { store, fleet, configured, acco
     if (Date.now() - report.createdAt > UPLOAD_WINDOW_MS) throw new HttpError(403, 'upload_closed', '신고 접수 후 15분이 지나 이미지를 더 올릴 수 없습니다');
     const srv = fleet.get(report.serverId);
     if (!srv) throw new HttpError(404, 'not_found', '없는 신고입니다');
+    const steamId = report.reporterSteamId;
+    if (!steamId || !srv.store.hasPlayed(steamId)) {
+      throw new HttpError(403, 'not_player', '이 서버에서 플레이한 기록이 있는 스팀 계정만 이미지를 올릴 수 있습니다. 대신 증거 링크를 남겨주세요');
+    }
     if (srv.store.reportImageCount(report.id) >= MAX_IMAGES) throw new HttpError(400, 'too_many_images', `이미지는 신고 1건에 ${MAX_IMAGES}장까지입니다`);
     const declared = Number(req.headers['content-length'] ?? 0);
     if (declared > MAX_IMAGE_BYTES) throw new HttpError(413, 'image_too_large', '이미지는 1장에 5MB까지입니다');
@@ -177,6 +182,9 @@ export function registerReports(router: Router, { store, fleet, configured, acco
     });
     const mime = sniffImage(buf);
     if (!mime) throw new HttpError(415, 'bad_image', 'JPG, PNG, WebP 이미지만 올릴 수 있습니다');
+    if (store.reportImagesBytesBy(steamId, Date.now() - 86400_000) + buf.length > DAILY_IMAGE_BYTES) {
+      throw new HttpError(429, 'image_daily_limit', '이미지는 하루에 50MB까지 올릴 수 있습니다. 대신 증거 링크를 남겨주세요');
+    }
     if (store.reportImagesBytes() + buf.length > IMAGE_QUOTA_BYTES) {
       console.warn('[신고] 이미지 저장 공간(5GB)이 가득 차 업로드를 거부했습니다');
       throw new HttpError(507, 'image_storage_full', '이미지 저장 공간이 가득 차 지금은 이미지를 올릴 수 없습니다. 신고 내용은 접수되었습니다');

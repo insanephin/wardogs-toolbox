@@ -35,9 +35,10 @@ interface FleetOptions {
   gapSec: number;
   minKills: number;
   demoRcon?: (row: ServerRow) => RconClient | null;
+  trusted?: (row: ServerRow) => boolean;
 }
 
-export function createFleet({ store, hub, steam, weapons, gapSec, minKills, demoRcon }: FleetOptions) {
+export function createFleet({ store, hub, steam, weapons, gapSec, minKills, demoRcon, trusted = () => false }: FleetOptions) {
   const runtimes = new Map<number, ServerRuntime>();
   let running = false;
 
@@ -60,7 +61,7 @@ export function createFleet({ store, hub, steam, weapons, gapSec, minKills, demo
     const scoped = store.forServer(row.id);
     const emit: Emit = (event, data) => hub.broadcast(row.id, event, data);
     const fake = demoRcon?.(row) ?? null;
-    const rcon = fake ?? new RconClient({ baseUrl: row.rconUrl, password: row.rconPassword });
+    const rcon = fake ?? new RconClient({ baseUrl: row.rconUrl, password: row.rconPassword, allowPrivate: trusted(row) });
     let poller: Poller;
     const feed = new FeedProcessor({
       store: scoped,

@@ -19,6 +19,7 @@ const TWITCH_ID = 'https://id.twitch.tv/oauth2';
 const STEAM_OPENID = 'https://steamcommunity.com/openid/login';
 const STEAM_NS = 'http://specs.openid.net/auth/2.0';
 const STEAM_SELECT = 'http://specs.openid.net/auth/2.0/identifier_select';
+const STEAM_SIGNED = ['op_endpoint', 'claimed_id', 'identity', 'return_to', 'response_nonce', 'assoc_handle'];
 const STEAM_CLAIMED_ID = /^https:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/;
 const JOIN_URL = 'https://wardogserverlist.com/join';
 
@@ -248,6 +249,9 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
     if ((q.get('openid.return_to') ?? '').split('?')[0] !== config.steam.returnUrl) throw new LinkError('failed', 'steam return_to');
     const steamId = STEAM_CLAIMED_ID.exec(q.get('openid.claimed_id') ?? '')?.[1];
     if (!steamId) throw new LinkError('failed', 'steam claimed_id');
+    if (q.get('openid.identity') !== q.get('openid.claimed_id')) throw new LinkError('failed', 'steam identity');
+    const signed = new Set((q.get('openid.signed') ?? '').split(','));
+    if (!STEAM_SIGNED.every((f) => signed.has(f))) throw new LinkError('failed', 'steam signed fields');
 
     const check = new URLSearchParams();
     for (const [k, v] of q) if (k.startsWith('openid.')) check.set(k, v);

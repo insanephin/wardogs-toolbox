@@ -60,6 +60,7 @@ function createApp(config: Config, kv: Kv) {
     gapSec: config.engagementGapSec,
     minKills: config.engagementMinKills,
     demoRcon: demo.rcon,
+    trusted: (row) => !!row.createdBy && auth.superadmins.has(row.createdBy),
   });
   fleet.load();
 
@@ -215,7 +216,12 @@ function createApp(config: Config, kv: Kv) {
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname === '/panel/demo' && req.method === 'GET') {
-      endPanelSession(parseCookies(req.headers.cookie)[COOKIE]);
+      const previous = parseCookies(req.headers.cookie)[COOKIE];
+      if (auth.session(previous)?.guest) {
+        res.writeHead(302, { Location: '/panel', 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
+        return res.end();
+      }
+      endPanelSession(previous);
       const sid = auth.login(GUEST_STEAM_ID, GUEST_NAME, true);
       res.writeHead(302, { Location: '/panel', 'Set-Cookie': cookie(sid, 12 * 3600), 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
       return res.end();

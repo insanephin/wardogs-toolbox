@@ -42,7 +42,7 @@ for (const server of servers) {
   if (!server.rconUrl) bad('RCON 주소가 없습니다', "관리자 패널 '연결 정보' 탭에서 입력하세요 (예: http://203.0.113.10:7776)");
   if (!server.rconPassword) bad('RCON 비밀번호가 없습니다', "관리자 패널 '연결 정보' 탭에서 입력하세요 (게임 서버 ini의 Password 또는 Saved/RCON/ADMIN-PASSWORD.txt 값)");
   if (!server.rconUrl || !server.rconPassword) continue;
-  const rcon = new RconClient({ baseUrl: server.rconUrl, password: server.rconPassword, timeoutMs: 6000 });
+  const rcon = new RconClient({ baseUrl: server.rconUrl, password: server.rconPassword, timeoutMs: 6000, allowPrivate: true });
   try {
     const caps = await rcon.loadCapabilities();
     ok(`연결·인증 성공 · 빌드 ${caps.build ?? '?'} · API v${caps.apiVersion ?? '?'} · 경로 ${caps.routes?.length ?? 0}개`);

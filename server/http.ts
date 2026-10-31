@@ -155,6 +155,7 @@ export const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
+  'Strict-Transport-Security': 'max-age=31536000',
 };
 
 const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
@@ -207,6 +208,9 @@ export async function serveStatic(root: string, urlPath: string, res: ServerResp
   }
 }
 
+const MAX_STREAMS_PER_SESSION = 4;
+const MAX_GUEST_STREAMS = 200;
+
 interface SseClient {
   res: ServerResponse;
   session: Session;
@@ -232,6 +236,14 @@ export class SseHub {
   }
 
   open(req: IncomingMessage, res: ServerResponse, session: Session, sessionId: string | undefined, serverId: number): SseClient {
+    const mine = [...this.clients].filter((c) => c.sessionId === sessionId);
+    for (const c of mine.slice(0, Math.max(0, mine.length - MAX_STREAMS_PER_SESSION + 1))) {
+      c.res.end();
+      this.clients.delete(c);
+    }
+    if (session.guest && [...this.clients].filter((c) => c.session.guest).length >= MAX_GUEST_STREAMS) {
+      throw new HttpError(503, 'demo_busy', '데모 체험 접속이 많습니다. 잠시 후 다시 시도하세요');
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store',
