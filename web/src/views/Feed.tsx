@@ -192,8 +192,9 @@ function EngagementTable({ rows, onOpen }: { rows: Engagement[]; onOpen: (g: Eng
           <div className="muted small">{`${Math.max(1, Math.round(duration(g)))}초${g.map ? ` · ${g.map}` : ''}`}</div>
         </>
       ) },
-      { key: 'kills', width: '12%', label: '킬', num: true, sort: (g) => g.kills, render: (g) => (g.teamkills ? <>{g.kills}<div className="danger small">{`팀킬 ${g.teamkills}`}</div></> : g.kills) },
-      { key: 'people', width: '12%', label: '인원', num: true, sort: (g) => g.participants.length, render: (g) => g.participants.length },
+      { key: 'kills', width: '11%', label: '킬', num: true, sort: (g) => g.kills, render: (g) => g.kills },
+      { key: 'teamkills', width: '11%', label: '팀킬', num: true, sort: (g) => g.teamkills, render: (g) => (g.teamkills ? <span className="danger">{g.teamkills}</span> : <span className="muted">—</span>) },
+      { key: 'people', width: '11%', label: '인원', num: true, sort: (g) => g.participants.length, render: (g) => g.participants.length },
       { key: 'actions', width: '88px', label: <span className="sr-only">작업</span>, className: 'actions', render: (g) => <button className="btn btn-sm" type="button" onClick={() => onOpen(g)}>상세</button> },
     ]} />
   );

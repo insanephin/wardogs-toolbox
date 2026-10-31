@@ -585,9 +585,18 @@ textarea { resize: vertical; width: 100%; }
   .main-fill .grid-main > .card > .card-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .main-fill > .page-body > .card > .card-body > .table-wrap,
   .main-fill .grid-main > .card > .card-body > .table-wrap { flex: 1; min-height: 0; overflow: auto; }
-  .main-fill .table-wrap thead th { position: sticky; top: 0; z-index: 1; background: var(--panel); }
+  .main-fill .table-wrap { --thead-h: 40px; --thead-gap: 0px; }
+  .main-fill .table-wrap:has(> .table-cards) { --thead-gap: 8px; }
+  .main-fill .table-wrap > .table-cards { margin-top: calc(-1 * var(--thead-gap)); }
+  .main-fill .table-wrap thead th {
+    position: sticky; top: 0; z-index: 2; background: var(--panel);
+    height: var(--thead-h); padding-top: 0; padding-bottom: 0; line-height: 20px; vertical-align: middle;
+    box-shadow: 0 var(--thead-gap) 0 var(--panel);
+  }
+  .main-fill .table-wrap::-webkit-scrollbar-track:vertical { margin-top: calc(var(--thead-h) + var(--thead-gap)); }
   .main-fill .grid-main { grid-template-rows: minmax(0, 1fr); align-items: stretch; }
   .main-fill .grid-main > .stack { min-height: 0; overflow-y: auto; }
+  .app-main, .main-fill .table-wrap, .main-fill .grid-main > .stack { overscroll-behavior: none; }
 }
 @media (min-width: 901px) and (max-width: 1600px) {
   .main-fill-split { flex: 0 0 auto; }

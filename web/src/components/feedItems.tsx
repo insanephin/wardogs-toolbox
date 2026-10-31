@@ -48,19 +48,19 @@ export function KillTable({ rows, limit }: { rows: Kill[]; limit?: number }) {
   return (
     <SortTable rows={rows} rowKey={(k) => k.eventId} compact limit={limit} initial={{ key: 'at', dir: -1 }}
       rowClass={(k) => (k.teamkill ? 'row-tk' : k.suicide ? 'row-self' : undefined)} columns={[
-        { key: 'at', label: '시각', desc: true, sort: (k) => k.receivedAt, className: 'kill-time', render: (k) => <span title={`매치 시계 ${fmtClock(k.eventTime)}`}>{fmtTime(k.receivedAt)}</span> },
+        { key: 'at', width: '11%', label: '시각', desc: true, sort: (k) => k.receivedAt, className: 'kill-time', render: (k) => <span title={`매치 시계 ${fmtClock(k.eventTime)}`}>{fmtTime(k.receivedAt)}</span> },
         { key: 'killer', label: '킬러', sort: (k) => (k.suicide ? null : k.killerName ?? k.killerSteamId), render: (k) => (
           k.killerSteamId && !k.suicide ? <Who name={k.killerName} steamId={k.killerSteamId} faction={k.killerFaction} /> : <span className="muted">—</span>
         ) },
-        { key: 'weapon', label: '무기', sort: (k) => (k.suicide ? '자살' : k.weapon), className: 'kill-weapon', render: (k) => (k.suicide ? '자살' : k.weapon || (k.killerSteamId ? '?' : '환경사')) },
+        { key: 'weapon', width: '15%', label: '무기', sort: (k) => (k.suicide ? '자살' : k.weapon), className: 'kill-weapon', render: (k) => (k.suicide ? '자살' : k.weapon || (k.killerSteamId ? '?' : '환경사')) },
         { key: 'victim', label: '피해자', sort: (k) => k.victimName ?? k.victimSteamId, render: (k) => <Who name={k.victimName} steamId={k.victimSteamId} faction={k.victimFaction} /> },
-        { key: 'tags', label: '태그', desc: true, sort: (k) => Number(k.teamkill) * 2 + Number(k.headshot), render: (k) => (
+        { key: 'tags', width: '22%', label: '태그', desc: true, sort: (k) => Number(k.teamkill) * 2 + Number(k.headshot), render: (k) => (
           <>
             {k.teamkill ? <span className="tag tag-danger" title="폴링으로 본 진영 기준 추정">팀킬</span> : null}
             {k.tags.filter((t) => SHOWN_TAGS.includes(t)).map((t) => <span key={t} className={`tag${t === 'Headshot' ? ' tag-hs' : ''}`}>{TAG_LABELS[t] || t}</span>)}
           </>
         ) },
-        { key: 'dist', label: '거리', num: true, sort: (k) => k.distanceM, className: 'nowrap', render: (k) => (k.distanceM != null ? fmtDist(k.distanceM) : '—') },
+        { key: 'dist', width: '10%', label: '거리', num: true, sort: (k) => k.distanceM, className: 'nowrap', render: (k) => (k.distanceM != null ? fmtDist(k.distanceM) : '—') },
       ]} />
   );
 }
