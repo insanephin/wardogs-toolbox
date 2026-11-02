@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, useTransition } from 'react';
 import type { ComponentType, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useStore, setState, getState, can, colorsFrom, withEngagements, currentServer, pickServer, selectServer } from './lib/store.ts';
 import { api, errorMessage, scoped, refreshMe } from './lib/api.ts';
@@ -11,6 +11,7 @@ import Overview from './views/Overview.tsx';
 import { openCreateServer } from './components/createServer.tsx';
 import { ROLE_LABEL } from './lib/labels.ts';
 import { Spinner } from './components/spinner.tsx';
+import { busy } from './components/loading.tsx';
 import { IconButton, Icon } from './components/iconButton.tsx';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import {
@@ -245,12 +246,22 @@ function useLiveStream() {
 const subscribeHash = (fn: () => void) => (window.addEventListener('hashchange', fn), () => window.removeEventListener('hashchange', fn));
 const useHash = () => useSyncExternalStore(subscribeHash, () => location.hash.slice(1));
 
+function usePageHash(): [string, boolean] {
+  const [hash, setHash] = useState(() => location.hash.slice(1));
+  const [pending, startTransition] = useTransition();
+  useEffect(() => subscribeHash(() => startTransition(() => setHash(location.hash.slice(1)))), []);
+  return [hash, pending];
+}
+
 function Shell({ me }: { me: Me }) {
   useLiveStream();
-  const hash = useHash();
+  const [hash, pending] = usePageHash();
+  const navHash = useHash();
   const mainRef = useRef<HTMLElement>(null);
   const { allowed, entry, tab } = resolve(hash);
   const page = tab || entry;
+  const nav = resolve(navHash);
+  const navPage = nav.tab || nav.entry;
   const role = currentServer()?.role ?? null;
   const stale = useStore((s) => !!s.live && !s.live.online);
 
@@ -261,7 +272,7 @@ function Shell({ me }: { me: Me }) {
   }, [page.id]);
 
   const navItem = (v: Page) => (
-    <a key={v.id} href={`#${v.id}`} className={v.id === page.id ? 'active' : undefined} aria-current={v.id === page.id ? 'page' : undefined}>
+    <a key={v.id} href={`#${v.id}`} className={v.id === navPage.id ? 'active' : undefined} aria-current={v.id === navPage.id ? 'page' : undefined}>
       {v.icon ? <Icon icon={v.icon} className="side-icon" fixedWidth /> : null}<span>{v.label}</span>
     </a>
   );
@@ -279,7 +290,7 @@ function Shell({ me }: { me: Me }) {
             </div>
           ))}
         </nav>
-        <div className="side-foot"><MeBox me={me} role={role} active={page.id === 'account'} /></div>
+        <div className="side-foot"><MeBox me={me} role={role} active={navPage.id === 'account'} /></div>
       </aside>
       <div className={stale ? 'app-main is-stale' : 'app-main'}>
         <header className="page-head">
@@ -290,7 +301,9 @@ function Shell({ me }: { me: Me }) {
           </div>
         </header>
         <main id="main" tabIndex={-1} ref={mainRef} className={page.fill ? `main-fill main-fill-${page.fill}` : undefined}>
-          {page.View ? <div key={page.id} className="page-body"><Suspense fallback={<Spinner />}><page.View /></Suspense></div> : null}
+          <Suspense fallback={<Spinner />}>
+            {page.View ? <div key={page.id} className="page-body" {...busy(pending)}><page.View /></div> : null}
+          </Suspense>
         </main>
       </div>
     </div>

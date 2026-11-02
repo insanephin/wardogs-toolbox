@@ -20,26 +20,49 @@ export function EventDetail({ e }: { e: FeedEvent }) {
 
 const SHOWN_TAGS = ['Headshot', 'Penetration', 'Ricochet', 'WeaponMelee', 'VehicleExplosion', 'RoadKill', 'Falling'];
 
-function Who({ name, steamId, faction }: { name: string | null; steamId: string | null; faction: string | null }) {
+function Who({ name, steamId, faction, className }: { name: string | null; steamId: string | null; faction: string | null; className?: string }) {
   const color = useFactionColor();
-  return <span className="who"><Fdot color={color(faction)} /><PlayerName steamId={steamId} name={name}>{name || steamId || '환경'}</PlayerName></span>;
+  return <span className="who"><Fdot color={color(faction)} /><PlayerName className={className} steamId={steamId} name={name}>{name || steamId || '환경'}</PlayerName></span>;
+}
+
+const MAX_BADGES = 2;
+
+function KillLine({ k }: { k: Kill }) {
+  const hasKiller = !!(k.killerSteamId || k.killerName);
+  const weapon = k.suicide ? null : k.weapon || (hasKiller ? '?' : null);
+  return (
+    <span className="kill-main">
+      {k.suicide ? <span className="muted">자살</span>
+        : hasKiller ? <Who name={k.killerName} steamId={k.killerSteamId} faction={k.killerFaction} className="kill-name" />
+        : <span className="muted" title="게임 서버가 킬러 정보를 보내지 않은 처치입니다">{k.weapon ? '알 수 없음' : '환경'}</span>}
+      {weapon ? <span className="kill-weapon" title={weapon}>(<span>{weapon}</span>)</span> : null}
+      <Icon icon={faArrowRight} className="kill-arrow" aria-label="처치" />
+      <Who name={k.victimName} steamId={k.victimSteamId} faction={k.victimFaction} className="kill-name" />
+    </span>
+  );
+}
+
+function KillBadges({ k }: { k: Kill }) {
+  const badges = [
+    ...(k.teamkill ? [{ key: 'tk', label: '팀킬', cls: 'tag tag-danger', title: '폴링으로 본 진영 기준 추정' }] : []),
+    ...k.tags.filter((t) => SHOWN_TAGS.includes(t)).map((t) => ({ key: t, label: TAG_LABELS[t] || t, cls: `tag${t === 'Headshot' ? ' tag-hs' : ''}`, title: undefined })),
+  ];
+  const rest = badges.slice(MAX_BADGES);
+  return (
+    <span className="kill-meta">
+      {badges.slice(0, MAX_BADGES).map((b) => <span key={b.key} className={b.cls} title={b.title}>{b.label}</span>)}
+      {rest.length ? <span className="tag" title={rest.map((b) => b.label).join(', ')}>{`+${rest.length}`}</span> : null}
+    </span>
+  );
 }
 
 export const KillRow = memo(function KillRow({ k, compact = false }: { k: Kill; compact?: boolean; now?: number }) {
-  const tags = k.tags.filter((t) => SHOWN_TAGS.includes(t));
   return (
-    <div className={`kill${k.teamkill ? ' kill-tk' : ''}${k.suicide ? ' kill-self' : ''}`}>
+    <div className={`kill${k.suicide ? ' kill-self' : ''}`}>
       <span className="kill-time" title={`매치 시계 ${fmtClock(k.eventTime)}`}>{compact ? fmtAgo(k.receivedAt) : fmtTime(k.receivedAt)}</span>
-      <span className="kill-main">
-        {k.killerSteamId && !k.suicide ? <Who name={k.killerName} steamId={k.killerSteamId} faction={k.killerFaction} /> : null}
-        <span className="kill-weapon">{k.suicide ? '자살' : k.weapon || (k.killerSteamId ? '?' : '환경사')}</span>
-        <Who name={k.victimName} steamId={k.victimSteamId} faction={k.victimFaction} />
-      </span>
-      <span className="kill-meta">
-        {k.teamkill ? <span className="tag tag-danger" title="폴링으로 본 진영 기준 추정">팀킬</span> : null}
-        {tags.map((t) => <span key={t} className={`tag${t === 'Headshot' ? ' tag-hs' : ''}`}>{TAG_LABELS[t] || t}</span>)}
-        <span className="kill-dist">{k.distanceM != null ? fmtDist(k.distanceM) : '—'}</span>
-      </span>
+      <KillLine k={k} />
+      <KillBadges k={k} />
+      <span className="kill-dist">{k.distanceM != null ? fmtDist(k.distanceM) : '—'}</span>
     </div>
   );
 });
@@ -47,19 +70,10 @@ export const KillRow = memo(function KillRow({ k, compact = false }: { k: Kill; 
 export function KillTable({ rows, limit }: { rows: Kill[]; limit?: number }) {
   return (
     <SortTable rows={rows} rowKey={(k) => k.eventId} compact limit={limit} initial={{ key: 'at', dir: -1 }}
-      rowClass={(k) => (k.teamkill ? 'row-tk' : k.suicide ? 'row-self' : undefined)} columns={[
-        { key: 'at', width: '11%', label: '시각', desc: true, sort: (k) => k.receivedAt, className: 'kill-time', render: (k) => <span title={`매치 시계 ${fmtClock(k.eventTime)}`}>{fmtTime(k.receivedAt)}</span> },
-        { key: 'killer', label: '킬러', sort: (k) => (k.suicide ? null : k.killerName ?? k.killerSteamId), render: (k) => (
-          k.killerSteamId && !k.suicide ? <Who name={k.killerName} steamId={k.killerSteamId} faction={k.killerFaction} /> : <span className="muted">—</span>
-        ) },
-        { key: 'weapon', width: '15%', label: '무기', sort: (k) => (k.suicide ? '자살' : k.weapon), className: 'kill-weapon', render: (k) => (k.suicide ? '자살' : k.weapon || (k.killerSteamId ? '?' : '환경사')) },
-        { key: 'victim', label: '피해자', sort: (k) => k.victimName ?? k.victimSteamId, render: (k) => <Who name={k.victimName} steamId={k.victimSteamId} faction={k.victimFaction} /> },
-        { key: 'tags', width: '22%', label: '태그', desc: true, sort: (k) => Number(k.teamkill) * 2 + Number(k.headshot), render: (k) => (
-          <>
-            {k.teamkill ? <span className="tag tag-danger" title="폴링으로 본 진영 기준 추정">팀킬</span> : null}
-            {k.tags.filter((t) => SHOWN_TAGS.includes(t)).map((t) => <span key={t} className={`tag${t === 'Headshot' ? ' tag-hs' : ''}`}>{TAG_LABELS[t] || t}</span>)}
-          </>
-        ) },
+      rowClass={(k) => (k.suicide ? 'row-self' : undefined)} columns={[
+        { key: 'at', width: '11%', label: '시간', desc: true, sort: (k) => k.receivedAt, className: 'kill-time', render: (k) => <span title={`매치 시계 ${fmtClock(k.eventTime)}`}>{fmtTime(k.receivedAt)}</span> },
+        { key: 'kill', label: '킬', sort: (k) => (k.suicide ? null : k.killerName ?? k.killerSteamId), className: 'kill-cell', render: (k) => <KillLine k={k} /> },
+        { key: 'tags', width: '9rem', label: '태그', desc: true, sort: (k) => Number(k.teamkill) * 2 + Number(k.headshot), className: 'kill-cell', render: (k) => <KillBadges k={k} /> },
         { key: 'dist', width: '10%', label: '거리', num: true, sort: (k) => k.distanceM, className: 'nowrap', render: (k) => (k.distanceM != null ? fmtDist(k.distanceM) : '—') },
       ]} />
   );
