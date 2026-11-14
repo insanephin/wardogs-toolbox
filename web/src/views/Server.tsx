@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
-import type { CSSProperties, FormEvent } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import { useStore, can, currentServer } from '../lib/store.ts';
 import { api, run, errorMessage, refreshMe } from '../lib/api.ts';
 import { modal, confirmAction } from '../lib/modal.tsx';
-import { toast } from '../lib/toast.ts';
+import { toast, copyText } from '../lib/toast.ts';
 import { fmtAgo, fmtNum } from '../lib/format.ts';
 import { Card, Empty, useNow } from '../components/common.tsx';
-import type { ReactNode } from 'react';
 import type { Capabilities, FeedEndpoint, Live, Member } from '../lib/types.ts';
 import { ROLE_LABEL } from '../lib/labels.ts';
 import { IconButton, Icon } from '../components/iconButton.tsx';
 import { faCopy, faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
+import { Spinner } from '../components/spinner.tsx';
 
 type KvRow = [label: string, value: ReactNode, cls?: string];
 
@@ -18,6 +18,7 @@ function gameFeedLabel(g: Live['gameFeed'] | undefined, caps: Capabilities | nul
   if (caps && !caps.features?.feed) return '이 빌드는 알려 주지 않음';
   if (!g) return '—';
   if (!g.enabled) return '꺼짐 (bEventFeedEnabled)';
+  if (g.pausedForTerms) return '멈춤 · 채팅 약관 미동의';
   return g.anyUnhealthy ? `실패 보고됨 · 엔드포인트 ${g.endpointCount}개` : `정상 · 엔드포인트 ${g.endpointCount}개`;
 }
 
@@ -32,15 +33,10 @@ export default function Server() {
     `.EventFeedEndpoints=(Url="${location.origin}/api/ingest/events",Token="${token}")`,
     `EventFeedServerName=${serverName}`,
   ].join('\n');
-  const copySnippet = async () => {
-    try {
-      const { token } = await api<{ token: string }>('POST', '/api/feed-token');
-      await navigator.clipboard.writeText(snippet(token, live?.status?.serverName ?? '<서버 이름>'));
-      toast('복사했습니다');
-    } catch (err) {
-      toast(`복사하지 못했습니다: ${errorMessage(err)}`, 'error');
-    }
-  };
+  const copySnippet = () => api<{ token: string }>('POST', '/api/feed-token').then(
+    ({ token }) => copyText(snippet(token, live?.status?.serverName ?? '<서버 이름>')),
+    (err) => toast(`복사하지 못했습니다: ${errorMessage(err)}`, 'error'),
+  );
 
   const rotate = async () => {
     if (!(await confirmAction('피드 토큰 재발급', '지금 토큰은 바로 쓸 수 없게 됩니다. 게임 서버 ini의 EventFeedEndpoints 토큰을 새 값으로 바꿀 때까지 킬피드가 끊깁니다.', { confirm: '재발급' }))) return;
@@ -81,10 +77,11 @@ export default function Server() {
             ['거부된 요청', fmtNum(f?.rejected ?? 0)],
             ['피드 서버 이름', f?.serverName ?? '—'],
             ['현재 매치 키', f?.matchKey ?? '—', 'mono small'],
-            ['게임 서버 쪽 전송', gameFeedLabel(live?.gameFeed, caps), live?.gameFeed?.anyUnhealthy ? 'danger' : ''],
+            ['게임 서버 쪽 전송', gameFeedLabel(live?.gameFeed, caps), live?.gameFeed?.anyUnhealthy || live?.gameFeed?.pausedForTerms ? 'danger' : ''],
           ])}
         </Card>
       </div>
+      {can('admin') && caps?.features?.chat ? <ChatTermsCard paused={!!live?.gameFeed?.pausedForTerms} /> : null}
       {can('owner') ? <RconCard /> : null}
       {can('admin') && live?.gameFeed?.endpoints?.length ? <EndpointsCard endpoints={live.gameFeed.endpoints} /> : null}
       <SponsorCard />
@@ -104,6 +101,53 @@ export default function Server() {
       {can('admin') ? <DiscordBotCard /> : null}
       {can('owner') ? <DeleteServerCard /> : null}
     </div>
+  );
+}
+
+interface ChatTerms {
+  requiredVersion: number | null;
+  acceptedVersion: number;
+  accepted: boolean;
+  text: string;
+}
+
+function ChatTermsCard({ paused }: { paused: boolean }) {
+  const serverId = useStore((s) => s.serverId);
+  const [terms, setTerms] = useState<ChatTerms | { error: string } | null>(null);
+  const load = () => api<ChatTerms>('GET', '/api/chat-terms').then(setTerms, (err) => setTerms({ error: errorMessage(err) }));
+  useEffect(() => {
+    load();
+  }, [serverId, paused]);
+
+  const accept = async () => {
+    if (!terms || 'error' in terms || terms.requiredVersion == null) return;
+    if (!(await confirmAction('채팅 약관 동의', `이 게임 서버 운영자로서 Bulkhead 채팅 약관 ${terms.requiredVersion}판에 동의합니다. 동의하면 이벤트 피드가 다시 전송됩니다.`, { confirm: '동의' }))) return;
+    if (await run('채팅 약관 동의', 'POST', '/api/chat-terms', { version: terms.requiredVersion })) load();
+  };
+
+  return (
+    <Card title="채팅 약관 (0.3.0)">
+      <div className="card-body stack">
+        {terms === null ? <Empty><Spinner /></Empty> : 'error' in terms ? (
+          <span className="danger small">약관을 불러오지 못했습니다: {terms.error}</span>
+        ) : terms.accepted ? (
+          <span className="muted small">{`동의함 (${terms.acceptedVersion}판). 이벤트 피드가 전송되고, 채팅은 모더레이터 이상만 '채팅' 탭에서 봅니다. 채팅 기록은 3일이 지나면 자동으로 지웁니다.`}</span>
+        ) : (
+          <>
+            <div className="banner banner-error" role="alert">
+              게임 서버가 이 약관에 동의하기 전까지 이벤트 피드(킬·매치·입퇴장 기록)와 채팅을 보내지 않습니다. 동의하면 이 대시보드가 서버 관리용으로 채팅을 기록합니다 (모더레이터 이상만 열람, 3일 뒤 자동 삭제).
+            </div>
+            <pre className="code code-wrap">{terms.text || '(서버가 약관 본문을 보내지 않았습니다)'}</pre>
+            <p className="muted small">요약: 채팅은 이 서버 관리 용도로만 보고, 플레이어 채팅·신원을 관리에 필요한 범위를 넘어 기록·저장·공유하지 않으며, 개인정보 법령 준수는 운영자 책임입니다.</p>
+            {can('owner') ? (
+              <div className="inline-field">
+                <button className="btn btn-primary" type="button" disabled={terms.requiredVersion == null} onClick={accept}>{`약관 ${terms.requiredVersion ?? '?'}판에 동의`}</button>
+              </div>
+            ) : <span className="muted small">서버 소유자만 동의할 수 있습니다.</span>}
+          </>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -142,14 +186,6 @@ function DiscordBotCard() {
     load();
   }, [serverId]);
 
-  const copy = async (choice: string) => {
-    try {
-      await navigator.clipboard.writeText(panelCommand(choice));
-      toast('명령어를 복사했습니다');
-    } catch (err) {
-      toast(`복사하지 못했습니다: ${errorMessage(err)}`, 'error');
-    }
-  };
   const disconnect = async () => {
     if (!(await confirmAction('디스코드 서버 연결 해제', '이 디스코드 서버에서 새 패널을 올릴 수 없게 됩니다. 이미 올린 패널은 그대로 동작하고, 봇은 디스코드에서 직접 내보내야 합니다.', { confirm: '해제' }))) return;
     if (await run('디스코드 서버 연결 해제', 'DELETE', '/api/discord-guild')) load();
@@ -188,7 +224,7 @@ function DiscordBotCard() {
             <pre className="code">{panelCommand('일반')}</pre>
             <div className="inline-field">
               {PANEL_KINDS.map((k) => (
-                <button key={k.choice} className="btn btn-sm" type="button" title={k.hint} onClick={() => copy(k.choice)}>
+                <button key={k.choice} className="btn btn-sm" type="button" title={k.hint} onClick={() => copyText(panelCommand(k.choice), '명령어를 복사했습니다')}>
                   <Icon icon={faCopy} /> {`${k.label} 명령어 복사`}
                 </button>
               ))}
@@ -353,7 +389,7 @@ function EndpointsCard({ endpoints }: { endpoints: FeedEndpoint[] }) {
               <tr key={e.index}>
                 <td className="num">{e.index + 1}</td>
                 <td className="mono small">{`${e.scheme}${e.scheme ? '://' : ''}${e.host}`}</td>
-                <td>{e.healthy ? <span className="chip" style={{ '--c': 'var(--ok)' } as CSSProperties}>정상</span> : <span className="chip" style={{ '--c': 'var(--danger)' } as CSSProperties}>실패</span>}</td>
+                <td>{e.healthy ? <span className="chip chip-ok">정상</span> : <span className="chip chip-danger">실패</span>}</td>
                 <td className="num">{fmtNum(e.queued)}</td>
                 <td className="num">{fmtNum(e.inFlight)}</td>
                 <td className={`num${e.consecutiveFailures ? ' danger' : ''}`}>{fmtNum(e.consecutiveFailures)}</td>

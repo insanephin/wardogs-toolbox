@@ -2,7 +2,7 @@ export type Role = 'viewer' | 'mod' | 'admin' | 'owner';
 
 export type OrError<T> = (T & { error?: undefined }) | { error: string };
 
-export interface ServerSummary {
+interface ServerSummary {
   id: number;
   name: string;
   role: Role;
@@ -75,6 +75,8 @@ export interface Player {
   deaths: number;
   cash?: number;
   pingMs: number;
+  hiddenName?: string | null;
+  anonymous?: boolean;
   joinedAt: number | null;
   link: Link | null;
   subscriber: boolean;
@@ -126,13 +128,14 @@ export interface Live {
   status: GameStatus | null;
   players: Player[];
   health: { gameThreadQueue?: { depth?: number; rejectedTotal?: number } } | null;
+  chat?: ChatCollector;
   restart: { uptimeSeconds: number; due: boolean } | null;
   match: { scoreCap: number | null; scoreCapAssumed: boolean; matchSeconds: number | null; matchSecondsSource: 'status' | 'feed' | null } | null;
   mapTransition: boolean;
   cashUnreliable: boolean;
   serverId: string | null;
   feed: FeedStatus;
-  gameFeed: { enabled: boolean; endpointCount: number; anyUnhealthy: boolean; endpoints?: FeedEndpoint[] } | null;
+  gameFeed: { enabled: boolean; endpointCount: number; anyUnhealthy: boolean; pausedForTerms?: boolean; endpoints?: FeedEndpoint[] } | null;
   matchStats: MatchStat[];
   entryGate: EntryGate;
   turnover: Turnover;
@@ -182,7 +185,7 @@ export interface Capabilities {
   limits?: { maxRequestsPerMinutePerIp?: number; maxBodyBytes?: number };
   config?: { writable?: boolean };
   routes: string[];
-  features: { changeTeam: boolean; feed: boolean; reservedRoutes: boolean; configDocument: boolean; sponsor?: boolean };
+  features: { changeTeam: boolean; feed: boolean; reservedRoutes: boolean; configDocument: boolean; sponsor?: boolean; chat?: boolean };
   version: { build: string | null; project: { name?: string; version?: string } } | null;
 }
 
@@ -336,7 +339,7 @@ export interface ConfigDoc {
   revision: string;
   writable: boolean;
   text: string;
-  sections: { section: string; keyOverrides?: { key: string; writable?: boolean; lockedBy?: string }[] }[];
+  sections: { section: string; appliesWhen?: string; description?: string; keyOverrides?: { key: string; writable?: boolean; lockedBy?: string; appliesWhen?: string }[] }[];
   warnings: unknown[];
 }
 
@@ -357,7 +360,7 @@ export type SettingValue = string | number | boolean;
 export interface SettingField {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'bool' | 'enum';
+  type: 'text' | 'number' | 'bool' | 'enum' | 'lines';
   section: string;
   ini: string;
   def: SettingValue;
@@ -404,6 +407,36 @@ export interface Audit {
   rconError: string | null;
   feedRequests: FeedRequestRow[];
   feedEvents: FeedEvent[];
+}
+
+export interface ChatMessage {
+  id: number;
+  seq: number;
+  sentAt: number;
+  receivedAt: number;
+  matchKey: string | null;
+  map: string | null;
+  channel: string | null;
+  faction: string | null;
+  steamId: string | null;
+  realName: string | null;
+  hiddenName: string | null;
+  anonymous: boolean;
+  text: string;
+  ping: boolean;
+}
+
+interface ChatCollector {
+  state: 'unsupported' | 'terms' | 'ok' | 'error';
+  error: string | null;
+  lastAt: number | null;
+}
+
+export interface ChatData {
+  messages: ChatMessage[];
+  channels: string[];
+  collector: ChatCollector;
+  retentionDays: number;
 }
 
 export interface PlayerProfile {

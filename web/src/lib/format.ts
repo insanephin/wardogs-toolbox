@@ -10,7 +10,7 @@ export const ACTION_LABELS: Record<string, string> = {
   chzzk_owner_connect: '팔로워·구독 확인 채널 연결', chzzk_owner_disconnect: '팔로워·구독 확인 채널 해제',
   rotation_add: '로테이션 추가', rotation_set_next: '다음 맵 예약', rotation_move: '로테이션 순서 변경', rotation_remove: '로테이션 삭제',
   rotation_settings: '로테이션 설정', rotation_jump: '로테이션 이동',
-  settings_update: '간편 설정 적용', sponsor_update: '스폰서 이미지 변경', rcon_update: 'RCON 연결 정보 변경', feed_token_copy: '피드 토큰 복사', feed_token_rotate: '피드 토큰 재발급', discord_key_copy: '디스코드 패널 명령어 복사', discord_key_rotate: '디스코드 패널 비밀키 재발급', discord_guild_connect: '디스코드 서버 연결', discord_guild_disconnect: '디스코드 서버 연결 해제',
+  settings_update: '간편 설정 적용', sponsor_update: '스폰서 이미지 변경', rcon_update: 'RCON 연결 정보 변경', feed_token_copy: '피드 토큰 복사', feed_token_rotate: '피드 토큰 재발급', chat_terms_accept: '채팅 약관 동의', discord_key_copy: '디스코드 패널 명령어 복사', discord_key_rotate: '디스코드 패널 비밀키 재발급', discord_guild_connect: '디스코드 서버 연결', discord_guild_disconnect: '디스코드 서버 연결 해제',
   server_create: '서버 추가', server_update: '서버 이름 변경', member_add: '관리자 추가', member_role: '권한 변경', member_remove: '관리자 삭제', owner_transfer: '소유권 양도', preset_save: '프리셋 저장', preset_delete: '프리셋 삭제',
 };
 

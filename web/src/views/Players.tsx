@@ -18,7 +18,7 @@ export default function Players() {
   const q = search.trim().toLowerCase();
   const list = (live?.players || [])
     .filter((p) => !faction || p.faction === faction)
-    .filter((p) => !q || [p.name, p.steamId, p.link?.chzzkName].some((v) => v?.toLowerCase().includes(q)))
+    .filter((p) => !q || [p.name, p.hiddenName, p.steamId, p.link?.chzzkName].some((v) => v?.toLowerCase().includes(q)))
     .map((p) => {
       const s = stats.get(p.steamId);
       return {
@@ -55,7 +55,7 @@ export default function Players() {
           ) : (
             <SortTable rows={list} rowKey={(p) => p.steamId} initial={{ key: 'kills', dir: -1 }} columns={[
               { key: 'name', label: '플레이어', sort: (p) => p.name, render: (p) => (
-                <div className="who"><Avatar src={p.avatar} /><div><PlayerName className="pname" steamId={p.steamId} name={p.name} /><div className="mono muted small">{p.steamId}</div></div></div>
+                <div className="who"><Avatar src={p.avatar} /><div><PlayerName className="pname" steamId={p.steamId} name={p.name} />{p.anonymous ? <span className="tag" title={`익명 모드: 다른 플레이어에게는 "${p.hiddenName ?? '?'}"(으)로 보입니다`}>익명 · {p.hiddenName ?? '?'}</span> : null}<div className="mono muted small">{p.steamId}</div></div></div>
               ) },
               { key: 'linked', width: '18%', label: '연동', sort: (p) => p.linked, render: (p) => <LinkCell steamId={p.steamId} name={p.name} link={p.link} streamer={p.streamer} /> },
               { key: 'faction', width: '11%', label: '진영', sort: (p) => p.faction, render: (p) => <FactionChip name={p.faction} color={color(p.faction)} /> },

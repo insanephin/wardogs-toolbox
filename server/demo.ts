@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { RconClient, RconError } from './rcon.ts';
 import { FeedProcessor } from './feed.ts';
-import { getValue, parseRotationEntry, rotationEntriesInDoc, reservedIdsInDoc, setReservedInDoc, sameSelection, type RotationEntry } from './inidoc.ts';
+import { CASH_SAMPLE_MS } from './poller.ts';
+import { getValue, parseRotationEntry, rotationEntriesInDoc, reservedIdsInDoc, setReservedInDoc, sameSelection, S_SESSION, S_ENGINE, S_PREMATCH, S_KOTH, S_STATE, S_ROTATION, S_RCON, S_AFK, type RotationEntry } from './inidoc.ts';
 import type { Store, ServerRow, MatchPlayerDelta } from './store.ts';
 import type { WeaponLookup } from './weapons.ts';
 import type { Fleet } from './fleet.ts';
@@ -22,15 +24,9 @@ const HISTORY_STEP_SEC = 3;
 const LIVE_STEP_MS = 2000;
 const POST_MATCH_SEC = 25;
 const SCORE_SPEED = 0.1;
-const CASH_SAMPLE_MS = 60_000;
 const KICK_REJOIN_MS = 90_000;
 const ONLINE_TARGET = 16;
 const OFFICIAL_MATCH_SECONDS = 105 * 60 + 12;
-
-const S_SESSION = '/Script/WDGame.WDGameSession';
-const S_ENGINE = '/Script/Engine.GameSession';
-const S_KOTH = 'MatchState.Playing.KOTH';
-const S_ROTATION = '/Script/WDGame.WDServerMapRotationSettings';
 
 const FACTIONS = [
   { name: 'Valkyra', label: 'RED', colorHex: '#D86060' },
@@ -43,18 +39,22 @@ const MAPS = [
   { id: 'Kavkazi', displayName: 'Bakurani' },
   { id: 'Europe', displayName: 'Ozeti' },
   { id: 'NorthAmerica', displayName: 'Zestafona' },
+  { id: 'Russia', displayName: 'Sabatulo' },
 ];
 const EXPERIENCES = [
   { id: 'Bakurani_KOTH_01', displayName: 'King of the Hill' },
   { id: 'Madrid_KOTH_01', displayName: 'King of the Hill' },
   { id: 'Detroit_KOTH_01', displayName: 'King of the Hill' },
+  { id: 'Moscow_KOTH_01', displayName: 'King of the Hill' },
   { id: 'KOTH_InfantryOnly', displayName: 'Infantry' },
   { id: 'KOTH_Hardcore', displayName: 'Hardcore' },
+  { id: 'KOTH_LimitedGear', displayName: 'Limited Gear' },
 ];
 const EXPERIENCES_BY_MAP: Record<string, string[]> = {
-  Kavkazi: ['Bakurani_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'],
-  Europe: ['Madrid_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'],
-  NorthAmerica: ['Detroit_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'],
+  Kavkazi: ['Bakurani_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear'],
+  Europe: ['Madrid_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear'],
+  NorthAmerica: ['Detroit_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear'],
+  Russia: ['Moscow_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear'],
 };
 const LIGHTINGS = [
   { id: 'DayStartClear', displayName: 'Day Start Clear' },
@@ -75,91 +75,30 @@ const ALTERNATORS_BY_MAP: Record<string, { tag: string; displayName: string }[]>
 };
 const UNKNOWN_NAMES = ['스나이퍼', '텀블러', '알파벳', '악마', '쥬쥬', '아이스', '연봉', '썩은물', '인공눈물', '누누', '매니큐어', '악몽'];
 
+const SESSION_JOIN_NOTE = 'Sent on the session update this apply triggers, so new joins are checked against it at once. Players already connected are not re-checked or removed.';
 const CONFIG_SECTIONS = [
-  { section: S_SESSION, appliesWhen: 'applied', description: '서버 정보, 밴, 예약 슬롯, 스폰서 배너.',
+  { section: S_SESSION, appliesWhen: 'applied', description: 'Server identity, bans, reserved slots and the sponsor banner.',
     keyOverrides: [
-      { key: 'ServerPassword', appliesWhen: 'applied', description: '적용 시 세션 업데이트로 바로 전송되어 새 접속부터 막습니다. 이미 접속한 플레이어는 다시 확인하지 않습니다.' },
-      { key: 'ServerImageURL', appliesWhen: 'pending', description: '배너를 표시하기 전에 백그라운드에서 받아와 검증합니다.' },
+      { key: 'ServerPassword', appliesWhen: 'applied', description: 'Sent on the session update this apply triggers, so it gates new joins at once. Players already in are not rechecked.' },
+      { key: 'ServerImageURL', appliesWhen: 'pending', description: 'Fetched and validated off-thread before the banner is advertised.' },
+      ...['ServerMinPlayerCash', 'ServerMaxPlayerCash', 'ServerMinPlayerLevel', 'ServerMaxPlayerLevel'].map((key) => ({ key, appliesWhen: 'applied', description: SESSION_JOIN_NOTE })),
     ] },
-  { section: S_ENGINE, appliesWhen: 'next-restart', description: '최대 인원. 실행 중인 서버에는 적용하지 않으므로 재시작 후 반영됩니다.', keyOverrides: [] },
-  { section: '/Script/WDGame.WDGameStateSession', appliesWhen: 'next-match', description: '팀 밸런스 규칙. 진행 중인 매치는 기존 값을 유지합니다.', keyOverrides: [] },
-  { section: S_ROTATION, appliesWhen: 'applied', description: '맵 로테이션 순서와 방식. 바로 다시 만들어지고 다음 맵 변경부터 쓰입니다.', keyOverrides: [] },
-  { section: S_KOTH, appliesWhen: 'next-match', description: 'KOTH 점수. 라운드 도중에는 점수 주기가 바뀌지 않습니다.', keyOverrides: [] },
-  { section: 'MatchState.PreMatch.WaitingForPlayers.PlayerCount', appliesWhen: 'next-match', description: '매치 시작에 필요한 최소 인원. 다음 매치 대기가 시작될 때 읽습니다.', keyOverrides: [] },
+  { section: S_ENGINE, appliesWhen: 'next-restart', description: 'Player slot count. Not applied to a running server by choice, so a change takes effect on restart.', keyOverrides: [] },
+  { section: S_STATE, appliesWhen: 'next-match', description: 'Team balance rules and the welcome message. The running match keeps its current values; the config values are read when a match starts.',
+    keyOverrides: [
+      { key: 'ServerWelcomeMessageLines', appliesWhen: 'next-match', description: 'Welcome popup lines, shown once when a player first deploys. Up to 128 lines of 128 visible characters, scrolling when taller than the popup; style with <Bold>, <Italic>, <Header> or <text color="#RRGGBB" size="8-24" fontface="Bold">. Links and other tags show as typed.' },
+      { key: 'bServerWelcomeMessageEnabled', appliesWhen: 'next-match', description: 'Shows the welcome popup from the next match.' },
+      { key: 'ServerWelcomeMessageCloseDelaySeconds', appliesWhen: 'next-match', description: "Seconds the welcome popup's Close button stays locked so players read it first. 0 = no lock, up to 60." },
+      { key: 'bServerWelcomeMessageSkipForStreamers', appliesWhen: 'next-match', description: 'Players with streamer mode on skip the welcome popup.' },
+    ] },
+  { section: S_ROTATION, appliesWhen: 'applied', description: 'Map rotation order and mode. Rebuilt immediately; used from the next map change.', keyOverrides: [] },
+  { section: S_KOTH, appliesWhen: 'next-match', description: 'KOTH scoring. Scoring cadence never changes mid-round.', keyOverrides: [] },
+  { section: S_PREMATCH, appliesWhen: 'next-match', description: 'Minimum players before a match starts. Read when the next pre-match begins.', keyOverrides: [] },
+  { section: S_RCON, appliesWhen: 'next-restart', description: 'RCON listener. Written now, read at startup.', keyOverrides: [] },
+  { section: S_AFK, appliesWhen: 'next-match', description: "AFK kick timeout. Each player's AFK check reads it when the match starts, so a change applies from the next match.", keyOverrides: [] },
 ];
 
-const SERVER_SETTINGS_INI = `;|==============================================================================|
-;| 워독스 데디케이티드 서버 단독 설정 파일
-;|
-;| 아래 키만 적용됩니다. 서버 허용 목록(DedicatedServerEngine.ini의 AllowedConfigs)에
-;| 없는 섹션이나 키는 지워지므로 여기에 다른 키를 추가해도 효과가 없습니다.
-;| 설정은 서버 시작 시 적용됩니다.
-;|
-;| 쓰지 않을 줄은 지우거나 ";"로 주석 처리하세요. 빠진 키는 기본값을 씁니다.
-;|==============================================================================|
-
-[/Script/WDGame.WDGameSession]
-; 서버 목록에 보이는 이름.
-ServerName=워독스 데모 서버
-
-; 접속 비밀번호. 비워두면 누구나 접속할 수 있습니다.
-ServerPassword=
-
-; 플레이어 보유 금액 제한. 0 = 제한 없음.
-ServerMinPlayerCash=0
-ServerMaxPlayerCash=0
-
-; 플레이어 레벨 제한. 0 = 제한 없음.
-ServerMinPlayerLevel=0
-ServerMaxPlayerLevel=0
-
-; 스폰서 배너 이미지 URL. 1024x256 PNG/JPEG이고 서버 이미지 허용 목록에 있어야 합니다.
-ServerImageURL=https://i.postimg.cc/5N5ynGcY/Server-Browser-Image.jpg
-
-; 예약 슬롯: 최대 개수, 그다음 SteamID64마다 '+DefaultReservedPlayerIds=' 한 줄.
-; RCON 'reserved add/remove' 명령이 이 목록을 고치고 여기에 다시 저장합니다.
-MaxReservedSlots=20
-+DefaultReservedPlayerIds="76561198000000001"
-; +DefaultReservedPlayerIds="76561198000000002"
-
-; 밴된 플레이어: SteamID64마다 '+DefaultBannedPlayerIds=' 한 줄.
-; RCON ban/unban 명령이 이 목록을 고치고 여기에 다시 저장합니다.
-+DefaultBannedPlayerIds="76561198000000003"
-; +DefaultBannedPlayerIds="76561198000000004"
-
-[/Script/Engine.GameSession]
-
-; 최대 인원. 개발사가 정한 Lowest/HighestAllowedMaxPlayers 범위로 제한됩니다.
-MaxPlayers=32
-
-[MatchState.PreMatch.WaitingForPlayers.PlayerCount]
-
-; 매치 대기에서 매치로 넘어가는 데 필요한 인원.
-MinimumRequiredPlayers=60
-
-[MatchState.Playing.KOTH]
-
-; KOTH 점수 주기(초). 개발사가 정한 Min/MaxScorePeriod 범위로 제한됩니다.
-ScorePeriod=24
-
-[/Script/WDGame.WDGameStateSession]
-
-; 팀 밸런스: 인원 차이가 기준을 넘으면 많은 쪽 팀 합류를 막습니다.
-bLockOverpopulatedTeamsConfig=true
-OverpopulatedTeamThresholdConfig=2
-
-[/Script/WDGame.WDServerMapRotationSettings]
-
-; 로테이션을 켜고 순서 방식(Ordered 또는 Random)을 고릅니다.
-bEnabled=true
-RotationMode=Ordered
-
-; 한 줄에 하나씩. Experience(단수) = 모드 하나, Experiences(복수) = '+'로 이은 여러 모드.
-; Lighting은 허용된 조명 시나리오입니다. ZoneAlternator는 선택이며, 빼면 맵 기본 점령 구역을 씁니다.
-+RotationEntries=(Map="Kavkazi",Experience="Bakurani_KOTH_01",Lighting="DayClear",ZoneAlternator="ZoneAlternator.Factory.Circle")
-+RotationEntries=(Map="Europe",Experiences="Madrid_KOTH_01+KOTH_InfantryOnly",Lighting="DayLateGray")
-+RotationEntries=(Map="Europe",Experiences="Madrid_KOTH_01",Lighting="DayLateClear")
-`;
+const SERVER_SETTINGS_INI = readFileSync(new URL('./assets/ServerSettings.ini', import.meta.url), 'utf8');
 
 interface OfficialPlayer {
   name: string;
@@ -493,7 +432,7 @@ class DemoGame {
     for (const s of this.online) Object.assign(s, { kills: 0, deaths: 0, cash: 0, cashPeak: 0, earned: 0 });
     return [
       this.event('match_state', { state: 'MatchState.PreMatch.WaitingForWorldLoad' }),
-      this.event('match_state', { state: 'MatchState.Playing.KOTH' }),
+      this.event('match_state', { state: S_KOTH }),
     ];
   }
 
@@ -941,7 +880,7 @@ export function createDemo(store: Store, weapons: WeaponLookup) {
       const rt = fleet.get(row.id);
       if (!rt) continue;
       if (cash.matchKey === rt.feed.matchKey) Object.assign(rt.poller, { cash, lastCashAt: cash.points.at(-1)?.t ?? 0 });
-      rt.feed.matchState = { state: 'MatchState.Playing.KOTH', at: Date.now(), eventTime: game.matchSeconds };
+      rt.feed.matchState = { state: S_KOTH, at: Date.now(), eventTime: game.matchSeconds };
     }
   };
 

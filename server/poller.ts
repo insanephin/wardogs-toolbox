@@ -1,5 +1,6 @@
-import type { RconClient, RconError, GameStatus, GamePlayer } from './rcon.ts';
-import type { ServerStore as Store, MatchPlayerDelta, DiscordLink, Link } from './store.ts';
+import type { RconClient, RconError, GameStatus, GamePlayer, GameChat } from './rcon.ts';
+import type { ServerStore as Store, MatchPlayerDelta, DiscordLink, Link, NewChatMessage } from './store.ts';
+import { CHAT_RETENTION_DAYS } from './store.ts';
 import type { FeedProcessor } from './feed.ts';
 import { errorMessage } from './http.ts';
 import type { Emit } from './http.ts';
@@ -22,8 +23,13 @@ const TURNOVER_RETRY_MS = 5_000;
 const TURNOVER_REJOIN_MS = 15_000;
 const MANUAL_MAP_WINDOW_MS = 5 * 60_000;
 const SCOREBOARD_FLUSH_MS = 30_000;
-const CASH_SAMPLE_MS = 60_000;
+export const CASH_SAMPLE_MS = 60_000;
 const CASH_MAX_POINTS = 360;
+const CHAT_PAGE = 200;
+const CHAT_PAGES = 5;
+const CHAT_PRUNE_MS = 3600_000;
+
+type ChatState = 'unsupported' | 'terms' | 'ok' | 'error';
 
 interface CashPoint {
   t: number;
@@ -90,6 +96,9 @@ export class Poller {
   lastCapsAt = 0;
   passworded: boolean | null = null;
   lastConfigAt = 0;
+  chatSeq = 0;
+  chat: { state: ChatState; error: string | null; lastAt: number | null } = { state: 'unsupported', error: null, lastAt: null };
+  lastChatPruneAt = 0;
   timer: NodeJS.Timeout | undefined;
   ticking = false;
   stopped = false;
@@ -121,6 +130,10 @@ export class Poller {
 
   recheckConfig() {
     this.lastConfigAt = 0;
+  }
+
+  recheckHealth() {
+    this.lastHealthAt = 0;
   }
 
   nudge() {
@@ -186,6 +199,7 @@ export class Poller {
         this.rotationStale = false;
       }
       this.ingestPlayers(players, now);
+      await this.pollChat(now);
       this.steam?.warm(this.steamIds());
       this.trackScoreboard(now);
       this.sampleCash(now);
@@ -218,9 +232,70 @@ export class Poller {
   budgetedInterval(target: number): number {
     const limit = this.rcon.capabilities?.limits?.maxRequestsPerMinutePerIp;
     if (!limit) return target;
-    const perTick = 2;
+    const perTick = this.rcon.features.chat ? 3 : 2;
     const minMs = Math.ceil((60_000 * perTick) / (limit / 3));
     return Math.max(target, minMs);
+  }
+
+  async pollChat(now: number): Promise<void> {
+    if (!this.rcon.features.chat) {
+      this.chat = { state: 'unsupported', error: null, lastAt: this.chat.lastAt };
+      return;
+    }
+    const rows: NewChatMessage[] = [];
+    try {
+      for (let page = 0; page < CHAT_PAGES; page++) {
+        const r = await this.rcon.chat(this.chatSeq, CHAT_PAGE);
+        if (r.latestSeq != null && r.latestSeq < this.chatSeq) {
+          this.chatSeq = 0;
+          continue;
+        }
+        for (const m of r.messages) {
+          const seq = Number(m.seq);
+          if (!Number.isFinite(seq) || seq <= this.chatSeq) continue;
+          this.chatSeq = seq;
+          rows.push(this.chatRow(m, seq, now));
+        }
+        if (!r.messages.length && r.latestSeq != null) this.chatSeq = Math.max(this.chatSeq, r.latestSeq);
+        if (r.messages.length < CHAT_PAGE) break;
+      }
+      this.chat = { state: 'ok', error: null, lastAt: now };
+    } catch (err) {
+      const e = err as RconError;
+      this.chat = e.code === 'chat_terms_not_accepted'
+        ? { state: 'terms', error: null, lastAt: this.chat.lastAt }
+        : { state: 'error', error: e.message, lastAt: this.chat.lastAt };
+    }
+    if (rows.length) {
+      const added = this.store.insertChat(rows);
+      if (added.length) this.emit('chat', { latestId: added.at(-1)!.id, count: added.length });
+    }
+    if (now - this.lastChatPruneAt > CHAT_PRUNE_MS) {
+      this.lastChatPruneAt = now;
+      const removed = this.store.pruneChat(now - CHAT_RETENTION_DAYS * 86400_000);
+      if (removed) console.log(`[채팅] 보관 기간이 지난 채팅 ${removed}건을 지웠습니다`);
+    }
+  }
+
+  chatRow(m: GameChat, seq: number, now: number): NewChatMessage {
+    const sent = Date.parse(m.sentUtc ?? '');
+    const str = (v: unknown, max: number) => (typeof v === 'string' && v ? v.slice(0, max) : null);
+    return {
+      seq,
+      sentAt: Number.isFinite(sent) ? sent : now,
+      receivedAt: now,
+      matchKey: this.feed.matchKey,
+      map: this.status?.map ?? null,
+      channel: str(m.channel, 32),
+      faction: str(m.faction, 32),
+      steamId: str(m.steamId, 32),
+      realName: str(m.realName, 128),
+      hiddenName: str(m.hiddenName, 128),
+      anonymous: !!m.anonymous,
+      text: str(m.text, 1000) ?? str(m.rawText, 1000) ?? '',
+      rawText: str(m.rawText, 1000),
+      ping: !!m.ping,
+    };
   }
 
   ingestPlayers(list: GamePlayer[], now: number): void {
@@ -585,6 +660,7 @@ export class Poller {
       status: this.status,
       players: this.playersView(streamers),
       health: this.health,
+      chat: this.chat,
       restart: this.restartView(),
       match: this.matchView(),
       mapTransition: this.inMapTransition(now),

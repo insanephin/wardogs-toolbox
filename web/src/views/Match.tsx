@@ -8,7 +8,7 @@ import { Card, Empty, MapArt } from '../components/common.tsx';
 import { Spinner } from '../components/spinner.tsx';
 import { IconButton } from '../components/iconButton.tsx';
 import { faArrowUp, faArrowDown, faTrash, faForwardStep } from '@fortawesome/free-solid-svg-icons';
-import { MODIFIER_LABEL, BASE_MODE_LABEL, isBaseMode, modesLabel, LIGHTING, lightingLabel, ALTERNATOR, ALTERNATOR_DEFAULT_HINT } from '../lib/labels.ts';
+import { MODIFIER_LABEL, BASE_MODE_LABEL, isBaseMode, modesLabel, LIGHTING, lightingLabel, lightingsForMap, ALTERNATOR, ALTERNATOR_DEFAULT_HINT } from '../lib/labels.ts';
 
 const pick = (list: CatalogItem[], want: string | undefined): string => (want && list.some((x) => x.id === want) ? want : list[0]?.id ?? '');
 
@@ -73,6 +73,7 @@ function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog
         setModifier('');
         setAlternator('');
       });
+    setLighting((l) => (l && !lightingsForMap(map, catalog.lightings).some((x) => x.id === l) ? '' : l));
     return () => {
       stale = true;
     };
@@ -134,7 +135,7 @@ function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog
           <span className="field-label">조명</span>
           <select aria-label="조명" value={lighting} onChange={(e) => setLighting(e.target.value)}>
             <option value="">기본값</option>
-            {catalog.lightings.map((l) => <option key={l.id} value={l.id}>{LIGHTING[l.id]?.label ?? (l.displayName || l.id)}</option>)}
+            {lightingsForMap(map, catalog.lightings).map((l) => <option key={l.id} value={l.id}>{LIGHTING[l.id]?.label ?? (l.displayName || l.id)}</option>)}
           </select>
           <span className="hint">{lighting ? LIGHTING[lighting]?.hint : '맵에 정해진 기본 조명을 씁니다.'}</span>
         </label>
@@ -154,12 +155,14 @@ function ChangeMap({ catalog, admin, rev, onRotationChange }: { catalog: Catalog
 function LiveLighting({ catalog, admin }: { catalog: Catalog; admin: boolean }) {
   const caps = useStore((s) => s.caps);
   const [lighting, setLighting] = useState(() => pick(catalog.lightings, getState().live?.status?.lighting));
+  const liveMap = useStore((s) => s.live?.status?.map);
+  const options = lightingsForMap(liveMap, catalog.lightings);
   return (
     <label className="field divider">
       <span className="field-label">조명·날씨 즉시 변경</span>
       <span className="inline-field">
         <select aria-label="실시간 조명" value={lighting} onChange={(e) => setLighting(e.target.value)}>
-          {catalog.lightings.map((l) => <option key={l.id} value={l.id}>{LIGHTING[l.id]?.label ?? (l.displayName || l.id)}</option>)}
+          {options.map((l) => <option key={l.id} value={l.id}>{LIGHTING[l.id]?.label ?? (l.displayName || l.id)}</option>)}
         </select>
         <button className="btn ctl-btn" type="button" disabled={!admin || !serves(caps, 'PUT /v1/world/lighting')}
           onClick={() => run('조명 변경', 'POST', '/api/world/lighting', { lighting })}>적용</button>

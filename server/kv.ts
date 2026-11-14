@@ -1,5 +1,6 @@
 import { createClient } from 'redis';
 import type { Config } from './config.ts';
+import { errorMessage } from './http.ts';
 
 export interface Kv {
   get<T>(key: string): Promise<T | null>;
@@ -25,7 +26,7 @@ export async function connectKv({ redis }: Config): Promise<Kv> {
   });
   let down = false;
   client.on('error', (err) => {
-    if (!down) console.error(`[Redis] 연결 오류: ${err instanceof Error ? err.message : err}`);
+    if (!down) console.error(`[Redis] 연결 오류: ${errorMessage(err)}`);
     down = true;
   });
   client.on('ready', () => {

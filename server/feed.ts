@@ -3,6 +3,7 @@ import type { ServerStore as Store, Kill, MatchEvent, OpenEngagement, Engagement
 import type { Emit } from './http.ts';
 
 const IGNORED_TAGS = new Set(['Kill', 'Death']);
+const STORED_TYPES = new Set(['match_state', 'match_ended', 'player_joined', 'player_left']);
 const CLOCK_RESET_SEC = 30;
 const RESUME_MATCH_WITHIN_MS = 10 * 60 * 1000;
 
@@ -57,6 +58,7 @@ export class FeedProcessor {
   lastBatchAt: number | null = null;
   batches = 0;
   rejected = 0;
+  unknownTypes = new Set<string>();
 
   constructor({ store, weapons, gapSec, minKills, factionOf, emit, onMatchEnd = () => {} }: FeedOptions) {
     this.onMatchEnd = onMatchEnd;
@@ -115,6 +117,10 @@ export class FeedProcessor {
     let duplicates = 0;
     for (const e of body.events as FeedEvent[]) {
       if (!e || typeof e !== 'object' || !e.eventId || !e.type) continue;
+      if (e.type !== 'killed' && !STORED_TYPES.has(e.type)) {
+        this.noteUnknown(String(e.type));
+        continue;
+      }
       const fresh = e.type === 'killed' ? this.handleKill(e, receivedAt) : this.handleOther(e, receivedAt);
       if (fresh) accepted++;
       else duplicates++;
@@ -122,6 +128,12 @@ export class FeedProcessor {
     if (!wasPostMatch && isPostMatch(this.matchState?.state)) this.onMatchEnd();
     this.emit('feed', this.status());
     return { ok: true, accepted, duplicates };
+  }
+
+  noteUnknown(type: string): void {
+    if (this.unknownTypes.has(type) || this.unknownTypes.size >= 50) return;
+    this.unknownTypes.add(type);
+    console.log(`[피드] 모르는 이벤트 종류 "${type.slice(0, 40)}"는 저장하지 않고 버립니다`);
   }
 
   handleKill(e: FeedEvent, at: number): boolean {

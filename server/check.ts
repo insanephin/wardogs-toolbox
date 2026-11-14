@@ -56,6 +56,7 @@ for (const server of servers) {
     if (f.feed) {
       const feed = await rcon.feedHealth();
       if (!feed.enabled) warn('게임 서버의 이벤트 피드가 꺼져 있습니다 (bEventFeedEnabled)');
+      else if (feed.pausedForTerms) bad('게임 서버가 이벤트 피드를 멈췄습니다: 채팅 약관 미동의', "0.3.0부터 약관에 동의해야 킬피드가 옵니다. 관리자 패널 '설정 › 연결 정보'에서 소유자가 동의하세요");
       else if (feed.anyUnhealthy) warn(`게임 서버가 피드 전송 실패를 보고합니다 (엔드포인트 ${feed.endpointCount}개 중 일부)`);
       else ok(`게임 서버 피드 전송 정상 (엔드포인트 ${feed.endpointCount}개)`);
     }

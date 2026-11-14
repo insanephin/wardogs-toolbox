@@ -108,7 +108,7 @@ export default function LinkPage({ code, onServer }: { code: string | null; onSe
           ) : null}
 
           {link || server?.rule === 'open' ? null : (
-            <div className="notice-box">
+            <div className="banner banner-warn">
               <strong>로그인 전 확인하세요</strong>
               <ul>
                 <li>이 페이지는 <b>일반 플레이어용</b>입니다. 스트리머 화이트리스트는 디스코드에서 등록하세요.</li>

@@ -1,14 +1,12 @@
 import {
   reservedIdsInDoc, setReservedInDoc, rotationEntriesInDoc, setRotationInDoc, setRotationSettingsInDoc,
-  parseRotationEntry, formatRotationEntry, sameSelection, getValue, setValue,
+  parseRotationEntry, formatRotationEntry, sameSelection, getValue, setValue, S_SESSION, S_KOTH,
 } from './inidoc.ts';
 import type { RotationSelection, RotationSettings } from './inidoc.ts';
 import { fetch } from 'undici';
 import type { RequestInit, Response } from 'undici';
 import { publicOnly, isPrivateLiteral } from './netguard.ts';
 
-const SCORE_SECTION = 'MatchState.Playing.KOTH';
-const SESSION_SECTION = '/Script/WDGame.WDGameSession';
 const SPONSOR_KEY = 'ServerImageURL';
 const SCORE_KEY = 'ScorePeriod';
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -62,6 +60,27 @@ export interface ConfigResult extends Json {
   errors?: { message?: string; key?: string; code?: string }[];
   error?: { message?: string };
   outcomes?: { detail?: string }[];
+}
+
+export interface ChatTerms {
+  requiredVersion: number | null;
+  acceptedVersion: number;
+  accepted: boolean;
+  text: string;
+}
+
+export interface GameChat extends Json {
+  seq: number;
+  sentUtc?: string;
+  channel?: string;
+  faction?: string | null;
+  steamId?: string;
+  realName?: string;
+  hiddenName?: string | null;
+  anonymous?: boolean;
+  text?: string;
+  rawText?: string | null;
+  ping?: boolean;
 }
 
 export interface MapSelection {
@@ -161,6 +180,7 @@ export class RconClient {
       configDocument: false,
       sponsor: false,
       rotation: false,
+      chat: false,
     };
   }
 
@@ -244,6 +264,7 @@ export class RconClient {
       configDocument: has('PUT /v1/config') && caps.config?.writable !== false,
       sponsor: has('GET /v1/sponsor'),
       rotation: has('GET /v1/rotation'),
+      chat: has('GET /v1/chat') && has('GET /v1/chat/terms') && has('POST /v1/chat/terms'),
     };
     return caps;
   }
@@ -275,6 +296,7 @@ export class RconClient {
       enabled: !!d.enabled,
       endpointCount: Number(d.endpointCount) || 0,
       anyUnhealthy: !!d.anyUnhealthy,
+      pausedForTerms: !!d.pausedForTerms,
       endpoints: (Array.isArray(d.endpoints) ? d.endpoints : []).map((e: Json) => ({
         index: Number(e.index) || 0,
         scheme: String(e.scheme || ''),
@@ -289,6 +311,27 @@ export class RconClient {
         lastSuccessAt: e.lastSuccessUnixSeconds == null ? null : Number(e.lastSuccessUnixSeconds) * 1000,
       })),
     };
+  }
+
+  async chatTerms(): Promise<ChatTerms> {
+    const d = await this.get('/v1/chat/terms');
+    const required = Number(d.requiredVersion);
+    return {
+      requiredVersion: Number.isFinite(required) ? required : null,
+      acceptedVersion: Number(d.acceptedVersion) || 0,
+      accepted: !!d.accepted,
+      text: typeof d.text === 'string' ? d.text : '',
+    };
+  }
+
+  acceptChatTerms(version: number) {
+    return this.send('POST', '/v1/chat/terms', { version });
+  }
+
+  async chat(after: number, limit: number): Promise<{ latestSeq: number | null; messages: GameChat[] }> {
+    const d = await this.get('/v1/chat', { after, limit });
+    const latest = Number(d.latestSeq);
+    return { latestSeq: Number.isFinite(latest) ? latest : null, messages: Array.isArray(d.messages) ? d.messages : [] };
   }
 
   async audit(limit = 50): Promise<Json[]> {
@@ -388,12 +431,12 @@ export class RconClient {
 
   async sponsor(): Promise<string> {
     if (this.features.sponsor) return String((await this.get('/v1/sponsor')).imageUrl || '');
-    return getValue((await this.config()).text, SESSION_SECTION, SPONSOR_KEY) || '';
+    return getValue((await this.config()).text, S_SESSION, SPONSOR_KEY) || '';
   }
 
   setSponsor(url: string) {
     return this.editConfig((text) => ({
-      text: setValue(text, SESSION_SECTION, SPONSOR_KEY, url),
+      text: setValue(text, S_SESSION, SPONSOR_KEY, url),
       message: url ? '스폰서 이미지를 바꿨습니다.' : '스폰서 이미지를 지웠습니다.',
     }));
   }
@@ -403,13 +446,13 @@ export class RconClient {
   }
 
   async scorePeriod(): Promise<number | null> {
-    const v = getValue((await this.config()).text, SCORE_SECTION, SCORE_KEY);
+    const v = getValue((await this.config()).text, S_KOTH, SCORE_KEY);
     return v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null;
   }
 
   setScorePeriod(seconds: number) {
     return this.editConfig((text) => ({
-      text: setValue(text, SCORE_SECTION, SCORE_KEY, seconds),
+      text: setValue(text, S_KOTH, SCORE_KEY, seconds),
       message: `점수 주기를 ${seconds}초로 바꿨습니다. 다음 매치부터 적용됩니다.`,
     }));
   }

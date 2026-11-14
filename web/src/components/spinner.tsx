@@ -5,7 +5,7 @@ export function Spinner({ size = 20, scan = false }: { size?: number; scan?: boo
       <circle className="radar-ring" cx="20" cy="20" r="18" />
       {big ? <circle className="radar-ring radar-ring-in" cx="20" cy="20" r="11" /> : null}
       {big ? <circle className="radar-blip" cx="28" cy="12" r="1.5" /> : null}
-      {big ? <circle className="radar-blip" cx="13" cy="26" r="1.5" style={{ animationDelay: '1.4s' }} /> : null}
+      {big ? <circle className="radar-blip" cx="13" cy="26" r="1.5" /> : null}
       <g className="radar-sweep">
         <path className="radar-trail" d="M20 20 L20 2 A18 18 0 0 0 7.27 7.27 Z" />
         <line className="radar-arm" x1="20" y1="20" x2="20" y2="2" />

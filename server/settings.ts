@@ -1,19 +1,15 @@
 import { HttpError } from './http.ts';
-import { getValue, setValue } from './inidoc.ts';
+import { getValue, setValue, getLines, setLines, S_SESSION, S_ENGINE, S_PREMATCH, S_KOTH, S_STATE, S_ROTATION, S_AFK } from './inidoc.ts';
 
-const S_SESSION = '/Script/WDGame.WDGameSession';
-const S_ENGINE = '/Script/Engine.GameSession';
-const S_PREMATCH = 'MatchState.PreMatch.WaitingForPlayers.PlayerCount';
-const S_KOTH = 'MatchState.Playing.KOTH';
-const S_STATE = '/Script/WDGame.WDGameStateSession';
-const S_ROTATION = '/Script/WDGame.WDServerMapRotationSettings';
+const WELCOME_MAX_LINES = 128;
+const WELCOME_MAX_RAW = 1024;
 
 type Value = string | number | boolean;
 
 export interface SettingField {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'bool' | 'enum';
+  type: 'text' | 'number' | 'bool' | 'enum' | 'lines';
   section: string;
   ini: string;
   def: Value;
@@ -39,6 +35,15 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: 'scorePeriod', label: '점수 주기 (초)', type: 'number', section: S_KOTH, ini: 'ScorePeriod', def: 24, min: 18, max: 30 },
   { key: 'lockOverpopulated', label: '팀 밸런스: 인원 많은 팀 잠금', type: 'bool', section: S_STATE, ini: 'bLockOverpopulatedTeamsConfig', def: true },
   { key: 'overpopThreshold', label: '팀 밸런스: 인원 차이 기준', type: 'number', section: S_STATE, ini: 'OverpopulatedTeamThresholdConfig', def: 2, min: 0 },
+  { key: 'welcomeEnabled', label: '접속 안내 팝업', type: 'bool', section: S_STATE, ini: 'bServerWelcomeMessageEnabled', def: false,
+    hint: '처음 배치될 때 한 번 보이는 서버 규칙·안내 창 (0.3.0+)' },
+  { key: 'welcomeLines', label: '접속 안내 내용', type: 'lines', section: S_STATE, ini: 'ServerWelcomeMessageLines', def: '',
+    maxLength: WELCOME_MAX_LINES, hint: '최대 128줄·줄당 128자. <Bold> <Italic> <Header> <text color="#RRGGBB" size="8-24">로 꾸밀 수 있고 링크는 글자로만 보입니다' },
+  { key: 'welcomeCloseDelay', label: '안내 팝업 닫기 잠금 (초)', type: 'number', section: S_STATE, ini: 'ServerWelcomeMessageCloseDelaySeconds', def: 0, min: 0, max: 60,
+    hint: '읽도록 닫기 버튼을 잠그는 시간, 0은 잠금 없음' },
+  { key: 'welcomeSkipStreamers', label: '스트리머 모드는 안내 건너뜀', type: 'bool', section: S_STATE, ini: 'bServerWelcomeMessageSkipForStreamers', def: false },
+  { key: 'afkTimeout', label: 'AFK 킥 시간 (초)', type: 'number', section: S_AFK, ini: 'DefaultAFKTimeOutSeconds', def: 600, min: 1,
+    hint: '허용 범위는 게임 서버가 확인합니다 (예: 300~1800)' },
   { key: 'rotationEnabled', label: '맵 로테이션', type: 'bool', section: S_ROTATION, ini: 'bEnabled', def: true },
   { key: 'rotationMode', label: '로테이션 순서', type: 'enum', section: S_ROTATION, ini: 'RotationMode', def: 'Ordered',
     options: [{ value: 'Ordered', label: '순서대로' }, { value: 'Random', label: '무작위' }] },
@@ -50,12 +55,15 @@ function parse(field: SettingField, raw: string | null): Value | null {
   if (raw == null) return null;
   if (field.type === 'bool') return /^true$/i.test(raw.trim());
   if (field.type === 'number') return Number.isFinite(Number(raw)) && raw.trim() !== '' ? Number(raw) : null;
+  if (field.type === 'lines') return raw;
   if (field.type === 'enum') return field.options!.find((o) => o.value.toLowerCase() === raw.trim().toLowerCase())?.value ?? raw;
   return raw;
 }
 
 export function readSettings(text: string): Record<string, Value | null> {
-  return Object.fromEntries(SETTING_FIELDS.map((f) => [f.key, parse(f, getValue(text, f.section, f.ini))]));
+  return Object.fromEntries(SETTING_FIELDS.map((f) => [f.key, parse(f, f.type === 'lines'
+    ? getLines(text, f.section, f.ini)?.join('\n') ?? null
+    : getValue(text, f.section, f.ini))]));
 }
 
 function serialize(field: SettingField, value: unknown): string {
@@ -76,6 +84,14 @@ function serialize(field: SettingField, value: unknown): string {
     if (!v) throw bad('고를 수 있는 값이 아닙니다');
     return v.value;
   }
+  if (field.type === 'lines') {
+    if (typeof value !== 'string') throw bad('글자가 아닙니다');
+    const lines = value.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n');
+    if (lines.length === 1 && lines[0] === '') return '';
+    if (lines.length > (field.maxLength ?? Infinity)) throw bad(`최대 ${field.maxLength}줄입니다`);
+    if (lines.some((l) => l.length > WELCOME_MAX_RAW)) throw bad(`한 줄이 너무 깁니다 (태그 포함 ${WELCOME_MAX_RAW}자)`);
+    return lines.join('\n');
+  }
   const s = typeof value === 'string' ? value.trim() : '';
   if (/[\r\n]/.test(s)) throw bad('줄바꿈은 쓸 수 없습니다');
   if (field.maxLength && [...s].length > field.maxLength) throw bad(`최대 ${field.maxLength}자입니다`);
@@ -88,7 +104,10 @@ export function writeSettings(text: string, values: Record<string, unknown>): { 
   for (const [key, value] of Object.entries(values)) {
     const field = byKey.get(key);
     if (!field) throw new HttpError(400, 'unknown_setting', `모르는 설정입니다: ${key}`);
-    const next = setValue(out, field.section, field.ini, serialize(field, value));
+    const v = serialize(field, value);
+    const next = field.type === 'lines'
+      ? setLines(out, field.section, field.ini, v === '' ? [] : v.split('\n'))
+      : setValue(out, field.section, field.ini, v);
     if (next !== out) keys.push(key);
     out = next;
   }

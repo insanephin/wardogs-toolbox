@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Config } from './config.ts';
 import type { Store, Link, DiscordGuild } from './store.ts';
-import { HttpError, parseCookies } from './http.ts';
+import { HttpError, parseCookies, errorMessage } from './http.ts';
 import type { Router } from './http.ts';
 import { DISCORD_BOT_PERMISSIONS, botInstallConfigured } from './discord.ts';
 import type { Discord, VerifyResult } from './discord.ts';
@@ -83,7 +83,7 @@ const stateKey = (state: string) => `link:state:${state}`;
 
 export const sqlNow = () => new Date().toISOString().slice(0, 23).replace('T', ' ');
 
-export interface PublicServer {
+interface PublicServer {
   id: number;
   name: string;
   joinCode: string | null;
@@ -165,13 +165,13 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
     const code = url.searchParams.get('code');
     if (!code) throw new LinkError('cancelled');
     const token = await chzzkToken(config, code, state).catch((err) => {
-      throw new LinkError('failed', err instanceof Error ? err.message : String(err));
+      throw new LinkError('failed', errorMessage(err));
     });
     try {
       return { token, account: await chzzkMe(token.accessToken) };
     } catch (err) {
       chzzkRevoke(config, token.accessToken, 'access_token');
-      throw new LinkError('failed', err instanceof Error ? err.message : String(err));
+      throw new LinkError('failed', errorMessage(err));
     }
   }
 
@@ -315,7 +315,7 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
       backAdmin(res, provider, r.result, r.cookie);
     } catch (err) {
       const result = err instanceof LinkError ? err.result as PanelResult : 'failed';
-      if (result === 'failed') console.error(`[관리자] ${provider} 로그인 실패:`, err instanceof Error ? err.message : err);
+      if (result === 'failed') console.error(`[관리자] ${provider} 로그인 실패:`, errorMessage(err));
       backAdmin(res, provider, result);
     }
   }
@@ -327,7 +327,7 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
       backIdentity(res, provider, admin.identity(provider, account, panelSid));
     } catch (err) {
       const result = err instanceof LinkError ? err.result as PanelResult : 'failed';
-      if (result === 'failed') console.error(`[관리자] ${provider} 연결 실패:`, err instanceof Error ? err.message : err);
+      if (result === 'failed') console.error(`[관리자] ${provider} 연결 실패:`, errorMessage(err));
       backIdentity(res, provider, result);
     }
   }
@@ -341,7 +341,7 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
       backOwner(res, result);
     } catch (err) {
       const result = err instanceof LinkError ? err.result as PanelResult : 'failed';
-      if (result === 'failed') console.error('[치지직] 스트리머 연결 실패:', err instanceof Error ? err.message : err);
+      if (result === 'failed') console.error('[치지직] 스트리머 연결 실패:', errorMessage(err));
       backOwner(res, result);
     }
   }
@@ -372,7 +372,7 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
       backBot(res, admin.discordGuild(panelSid, serverId!, { id: String(guild.id), name: String(guild.name ?? guild.id) }));
     } catch (err) {
       const result = err instanceof LinkError ? err.result as PanelResult : 'failed';
-      if (result === 'failed') console.error('[디스코드] 봇 추가 실패:', err instanceof Error ? err.message : err);
+      if (result === 'failed') console.error('[디스코드] 봇 추가 실패:', errorMessage(err));
       backBot(res, result);
     }
   }
@@ -384,7 +384,7 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
       backDiscord(res, await discord.step(ticket!, provider, account), provider);
     } catch (err) {
       const result = err instanceof LinkError ? err.result : 'failed';
-      if (result === 'failed') console.error(`[디스코드] ${provider} 인증 실패:`, err instanceof Error ? err.message : err);
+      if (result === 'failed') console.error(`[디스코드] ${provider} 인증 실패:`, errorMessage(err));
       backDiscord(res, result, provider);
     }
   }
@@ -498,7 +498,7 @@ export function createLinking(config: Config, store: Store, kv: Kv, admin: Admin
       back(res, provider, result, purpose, clear, code);
     } catch (err) {
       const result = err instanceof LinkError ? err.result : 'failed';
-      if (result === 'failed') console.error(`[연동] ${provider} 실패:`, err instanceof Error ? err.message : err);
+      if (result === 'failed') console.error(`[연동] ${provider} 실패:`, errorMessage(err));
       if (purpose === 'discord') backDiscord(res, result, provider);
       else back(res, provider, result, purpose, null, code);
     }

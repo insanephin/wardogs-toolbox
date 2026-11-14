@@ -16,7 +16,7 @@ import { IconButton, Icon } from './components/iconButton.tsx';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import {
   faChevronDown, faPlus, faCheck, faRightFromBracket, faGauge, faUsers, faCrosshairs, faMap, faLink, faStar, faBan, faFlag,
-  faPlug, faSliders, faFileCode, faClockRotateLeft, faUserShield,
+  faPlug, faSliders, faFileCode, faClockRotateLeft, faUserShield, faComments,
 } from '@fortawesome/free-solid-svg-icons';
 
 const KILL_BUFFER = 300;
@@ -28,6 +28,7 @@ const lazyView = (load: () => Promise<{ default: ComponentType }>) => {
 };
 const Players = lazyView(() => import('./views/Players.tsx'));
 const Feed = lazyView(() => import('./views/Feed.tsx'));
+const Chat = lazyView(() => import('./views/Chat.tsx'));
 const Moderation = lazyView(() => import('./views/Moderation.tsx'));
 const Links = lazyView(() => import('./views/Links.tsx'));
 const Whitelist = lazyView(() => import('./views/Whitelist.tsx'));
@@ -60,6 +61,7 @@ const VIEWS: Page[] = [
   { id: 'overview', label: '개요', icon: faGauge, View: Overview, role: 'viewer' },
   { id: 'players', label: '플레이어', icon: faUsers, View: Players, role: 'viewer', fill: 'card' },
   { id: 'feed', label: '전투 기록', icon: faCrosshairs, View: Feed, role: 'viewer', fill: 'split' },
+  { id: 'chat', label: '채팅', icon: faComments, View: Chat, role: 'mod', fill: 'card' },
   { id: 'match', label: '경기 운영', icon: faMap, View: Match, role: 'viewer' },
   { id: 'access', label: '접속 관리', role: 'viewer', tabs: [
     { id: 'links', label: '계정 연동', icon: faLink, View: Links, role: 'viewer', fill: 'split' },
@@ -224,6 +226,7 @@ function useLiveStream() {
       on<FeedEvent>('matchEvent', (ev) => setState((s) => ({ matchEvents: [ev, ...s.matchEvents].slice(0, 200) })));
       on<FeedStatus>('feed', (feed) => setState((s) => (s.live ? { live: { ...s.live, feed } } : {})));
       on<Action>('action', (a) => setState({ lastAction: a }));
+      on('chat', () => setState((s) => ({ chatTick: s.chatTick + 1 })));
       on<{ matchKey: string | null; point: CashHistory['points'][number] }>('cash', ({ matchKey, point }) => setState((s) => ({
         cash: { matchKey, points: s.cash?.matchKey === matchKey ? [...s.cash.points, point].slice(-360) : [point] },
       })));

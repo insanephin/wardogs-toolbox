@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { HttpError, requireText, readBody, readJson } from './http.ts';
+import { HttpError, requireText, readBody, readJson, requireCsrf } from './http.ts';
 import type { Router, Handler, Body } from './http.ts';
 import type { Store, Report, NewReport } from './store.ts';
 import { DISCORD_ID } from './discord.ts';
@@ -30,7 +30,6 @@ const IMAGE_QUOTA_BYTES = 5 * 1024 ** 3;
 const DAILY_IMAGE_BYTES = 50 * 1024 * 1024;
 const UPLOAD_WINDOW_MS = 15 * 60_000;
 const IMAGE_KEEP_MS = 30 * 86400_000;
-const CSRF_HEADER = 'x-requested-with';
 
 function sniffImage(buf: Buffer): string | null {
   if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
@@ -159,7 +158,7 @@ export function registerReports(router: Router, { store, fleet, configured, acco
   });
 
   router.add('POST', '/api/report/:id/images', { public: true, rawBody: true }, async ({ req, params }) => {
-    if (req.headers[CSRF_HEADER] !== 'wardogs-dashboard') throw new HttpError(403, 'csrf', '요청 헤더가 없습니다');
+    requireCsrf(req);
     const a = await reporterOf(req);
     const report = store.reportById(Number(params.id));
     if (!report || report.reporterSteamId !== a.steam.id || report.reporterDiscordId) throw new HttpError(404, 'not_found', '없는 신고입니다');

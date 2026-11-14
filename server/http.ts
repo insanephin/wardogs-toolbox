@@ -48,6 +48,10 @@ export async function readJson(req: IncomingMessage, limit = 256 * 1024): Promis
   }
 }
 
+export function requireCsrf(req: IncomingMessage): void {
+  if (req.headers['x-requested-with'] !== 'wardogs-dashboard') throw new HttpError(403, 'csrf', '요청 헤더가 없습니다');
+}
+
 export const STEAM_ID = /^\d{17}$/;
 
 export function requireSteamId(id: string): string {

@@ -261,6 +261,25 @@ const SERVER_TABLES: Record<string, string> = {
   created_at INTEGER NOT NULL,
   PRIMARY KEY (server_id, steam_id)
 )`,
+  chat_messages: `CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  sent_at INTEGER NOT NULL,
+  received_at INTEGER NOT NULL,
+  match_key TEXT,
+  map TEXT,
+  channel TEXT,
+  faction TEXT,
+  steam_id TEXT,
+  real_name TEXT,
+  hidden_name TEXT,
+  anonymous INTEGER NOT NULL DEFAULT 0,
+  text TEXT NOT NULL,
+  raw_text TEXT,
+  ping INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (server_id, sent_at, seq)
+)`,
 };
 
 const SERVER_INDEXES = `
@@ -281,6 +300,9 @@ CREATE INDEX IF NOT EXISTS reports_reporter ON reports(reporter_chzzk_id, create
 CREATE INDEX IF NOT EXISTS reports_steam_reporter ON reports(reporter_steam_id, created_at);
 CREATE INDEX IF NOT EXISTS reports_discord_reporter ON reports(reporter_discord_id, created_at);
 CREATE INDEX IF NOT EXISTS discord_links_steam ON discord_links(steam_id);
+CREATE INDEX IF NOT EXISTS chat_server ON chat_messages(server_id, id);
+CREATE INDEX IF NOT EXISTS chat_steam ON chat_messages(server_id, steam_id, id);
+CREATE INDEX IF NOT EXISTS chat_sent ON chat_messages(server_id, sent_at);
 `;
 
 const LEGACY_INDEXES = ['kills_received', 'kills_killer', 'kills_victim', 'kills_match', 'match_events_received', 'engagements_started',
@@ -405,6 +427,37 @@ export interface MatchEvent {
   [key: string]: unknown;
 }
 
+export interface ChatMessage {
+  id: number;
+  seq: number;
+  sentAt: number;
+  receivedAt: number;
+  matchKey: string | null;
+  map: string | null;
+  channel: string | null;
+  faction: string | null;
+  steamId: string | null;
+  realName: string | null;
+  hiddenName: string | null;
+  anonymous: boolean;
+  text: string;
+  rawText: string | null;
+  ping: boolean;
+}
+
+export type NewChatMessage = Omit<ChatMessage, 'id'>;
+
+export const CHAT_RETENTION_DAYS = 3;
+
+interface ChatQuery {
+  before?: number;
+  after?: number;
+  limit?: number;
+  steamId?: string;
+  channel?: string;
+  search?: string;
+}
+
 export interface MatchPlayerDelta {
   matchKey: string;
   steamId: string;
@@ -511,7 +564,7 @@ export interface Report {
   note: string | null;
 }
 
-export interface ReportImage {
+interface ReportImage {
   id: number;
   reportId: number;
   file: string;
@@ -543,7 +596,7 @@ export interface ServerRow {
 const SERVER_COLUMNS = `id, name, rcon_url AS rconUrl, rcon_password AS rconPassword, feed_token AS feedToken,
   created_at AS createdAt, created_by AS createdBy, join_code AS joinCode`;
 
-export interface User {
+interface User {
   steamId: string;
   name: string | null;
   avatar: string | null;
@@ -561,7 +614,7 @@ export interface Member {
   lastLoginAt: number | null;
 }
 
-export interface Identity {
+interface Identity {
   provider: IdentityProvider;
   providerId: string;
   name: string | null;
@@ -578,7 +631,7 @@ interface StoreOptions {
   secretKey?: string;
 }
 
-export interface StoredSession {
+interface StoredSession {
   steamId: string;
   name: string;
   guest: boolean;
@@ -1054,6 +1107,47 @@ export class ServerStore {
     return r.changes > 0;
   }
 
+  insertChat(rows: NewChatMessage[]): ChatMessage[] {
+    const added: ChatMessage[] = [];
+    this.root.tx(() => {
+      for (const m of rows) {
+        const r = this.root.prep(`INSERT OR IGNORE INTO chat_messages
+          (server_id, seq, sent_at, received_at, match_key, map, channel, faction, steam_id, real_name, hidden_name, anonymous, text, raw_text, ping)
+          VALUES (:sid, :seq, :sentAt, :receivedAt, :matchKey, :map, :channel, :faction, :steamId, :realName, :hiddenName, :anonymous, :text, :rawText, :ping)`).run({
+          ...m, sid: this.id, anonymous: m.anonymous ? 1 : 0, ping: m.ping ? 1 : 0,
+        });
+        if (r.changes > 0) added.push({ ...m, id: Number(r.lastInsertRowid) });
+      }
+    });
+    return added;
+  }
+
+  chat({ before, after, limit = 100, steamId, channel, search }: ChatQuery = {}): ChatMessage[] {
+    const where = ['server_id = :sid'];
+    const args: Record<string, string | number> = { sid: this.id, limit: Math.min(500, Math.max(1, limit)) };
+    if (before) { where.push('id < :before'); args.before = before; }
+    if (after) { where.push('id > :after'); args.after = after; }
+    if (steamId) { where.push('steam_id = :steamId'); args.steamId = steamId; }
+    if (channel) { where.push('channel = :channel'); args.channel = channel; }
+    if (search) {
+      where.push(`(instr(lower(COALESCE(raw_text, text)), :q) > 0 OR instr(lower(text), :q) > 0
+        OR instr(lower(real_name), :q) > 0 OR instr(lower(hidden_name), :q) > 0 OR steam_id = :exact)`);
+      args.q = search.toLowerCase();
+      args.exact = search;
+    }
+    const order = after ? 'ASC' : 'DESC';
+    const rows = this.root.prep(`SELECT * FROM chat_messages WHERE ${where.join(' AND ')} ORDER BY id ${order} LIMIT :limit`).all(args) as Row[];
+    return rows.map(rowToChat);
+  }
+
+  chatChannels(): string[] {
+    return this.#all('SELECT DISTINCT channel FROM chat_messages WHERE server_id = ? AND channel IS NOT NULL ORDER BY channel').map((r) => r.channel);
+  }
+
+  pruneChat(olderThan: number): number {
+    return Number(this.#run('DELETE FROM chat_messages WHERE server_id = ? AND sent_at < ?', olderThan).changes);
+  }
+
   createEngagement(matchKey: string | null, map: string | null, at: number, eventTime: number | null): number {
     return Number(this.#run(`INSERT INTO engagements (server_id, match_key, map, started_at, ended_at, start_time, end_time)
       VALUES (?, ?, ?, ?, ?, ?, ?)`, matchKey, map, at, at, eventTime, eventTime).lastInsertRowid);
@@ -1421,6 +1515,14 @@ function sqlTimeToMs(v: unknown): number | null {
 
 function rowToLink(r: Row): Link {
   return { ...r, linkedAt: sqlTimeToMs(r.linkedAt) } as Link;
+}
+
+function rowToChat(r: Row): ChatMessage {
+  return {
+    id: r.id, seq: r.seq, sentAt: r.sent_at, receivedAt: r.received_at, matchKey: r.match_key, map: r.map,
+    channel: r.channel, faction: r.faction, steamId: r.steam_id, realName: r.real_name, hiddenName: r.hidden_name,
+    anonymous: !!r.anonymous, text: r.text, rawText: r.raw_text, ping: !!r.ping,
+  };
 }
 
 function rowToKill(r: Row): Kill {

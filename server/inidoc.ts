@@ -1,5 +1,11 @@
-const SESSION_SECTION = '/Script/WDGame.WDGameSession';
-const ROTATION_SECTION = '/Script/WDGame.WDServerMapRotationSettings';
+export const S_SESSION = '/Script/WDGame.WDGameSession';
+export const S_ENGINE = '/Script/Engine.GameSession';
+export const S_PREMATCH = 'MatchState.PreMatch.WaitingForPlayers.PlayerCount';
+export const S_KOTH = 'MatchState.Playing.KOTH';
+export const S_STATE = '/Script/WDGame.WDGameStateSession';
+export const S_ROTATION = '/Script/WDGame.WDServerMapRotationSettings';
+export const S_RCON = '/Script/WDRCON.WDRCONSettings';
+export const S_AFK = '/Script/BHAFKDetection.BHAFKDetectionSettings';
 const RESERVED_KEY = 'DefaultReservedPlayerIds';
 const ROTATION_KEY = 'RotationEntries';
 
@@ -129,13 +135,13 @@ function sameList(a: string[], b: string[]): boolean {
 }
 
 export function reservedIdsInDoc(text: string): string[] {
-  return getArray(text, SESSION_SECTION, RESERVED_KEY);
+  return getArray(text, S_SESSION, RESERVED_KEY);
 }
 
 export function setReservedInDoc(text: string, steamId: string, present: boolean): string {
   const ids = reservedIdsInDoc(text);
   if (present === ids.includes(steamId)) return text;
-  return setArray(text, SESSION_SECTION, RESERVED_KEY, present ? [...ids, steamId] : ids.filter((id) => id !== steamId));
+  return setArray(text, S_SESSION, RESERVED_KEY, present ? [...ids, steamId] : ids.filter((id) => id !== steamId));
 }
 
 export interface RotationEntry {
@@ -187,11 +193,11 @@ export function sameSelection(entry: RotationEntry, sel: RotationSelection): boo
 }
 
 export function rotationEntriesInDoc(text: string): string[] {
-  return getArray(text, ROTATION_SECTION, ROTATION_KEY);
+  return getArray(text, S_ROTATION, ROTATION_KEY);
 }
 
 export function setRotationInDoc(text: string, entries: string[]): string {
-  return setArray(text, ROTATION_SECTION, ROTATION_KEY, entries, { op: '.', clear: true });
+  return setArray(text, S_ROTATION, ROTATION_KEY, entries, { op: '.', clear: true });
 }
 
 export interface RotationSettings {
@@ -201,7 +207,62 @@ export interface RotationSettings {
 
 export function setRotationSettingsInDoc(text: string, { enabled, mode }: RotationSettings): string {
   let out = text;
-  if (enabled !== undefined) out = setValue(out, ROTATION_SECTION, 'bEnabled', enabled ? 'True' : 'False');
-  if (mode !== undefined) out = setValue(out, ROTATION_SECTION, 'RotationMode', mode === 'random' ? 'Random' : 'Ordered');
+  if (enabled !== undefined) out = setValue(out, S_ROTATION, 'bEnabled', enabled ? 'True' : 'False');
+  if (mode !== undefined) out = setValue(out, S_ROTATION, 'RotationMode', mode === 'random' ? 'Random' : 'Ordered');
   return out;
+}
+
+const unquoteLine = (v: string) => (/^".*"$/.test(v) ? v.slice(1, -1).replace(/\\(["\\])/g, '$1') : v);
+const quoteLine = (v: string) => (/["\\]|^\s|\s$/.test(v) ? `"${v.replace(/(["\\])/g, '\\$1')}"` : v);
+
+function rawKey(line: string): { op: string; key: string; raw: string } | null {
+  const m = /^\s*([+\-.!]?)([A-Za-z0-9_]+)\s*=(.*)$/.exec(line);
+  return m ? { op: m[1], key: m[2], raw: m[3].trim() } : null;
+}
+
+export function getLines(text: string, section: string, key: string): string[] | null {
+  const lines = text.split(/\r?\n/);
+  const sec = sectionRanges(lines).find((r) => r.name === section);
+  if (!sec) return null;
+  let out: string[] | null = null;
+  for (let i = sec.start + 1; i < sec.end; i++) {
+    const kv = rawKey(lines[i]);
+    if (!kv || kv.key !== key) continue;
+    if (kv.op === '!') out = [];
+    else if (kv.op === '-') {
+      const gone = unquoteLine(kv.raw);
+      out = (out ?? ([] as string[])).filter((v) => v !== gone);
+    }
+    else (out ??= []).push(unquoteLine(kv.raw));
+  }
+  return out;
+}
+
+export function setLines(text: string, section: string, key: string, values: string[]): string {
+  const current = getLines(text, section, key);
+  if (current && sameList(current, values)) return text;
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const block = [`!${key}=ClearArray`, ...values.map((v) => `.${key}=${quoteLine(v)}`)];
+  const lines = text.split(/\r?\n/);
+  const sec = sectionRanges(lines).find((r) => r.name === section);
+  if (!sec) {
+    const tail = lines.length && lines[lines.length - 1] === '' ? '' : eol;
+    return text + tail + eol + [`[${section}]`, ...block].join(eol) + eol;
+  }
+  let at = -1;
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const kv = i > sec.start && i < sec.end ? rawKey(lines[i]) : null;
+    if (kv && kv.key === key) {
+      if (at < 0) at = kept.length;
+      continue;
+    }
+    kept.push(lines[i]);
+  }
+  if (at < 0) {
+    at = sec.end;
+    while (at > sec.start + 1 && kept[at - 1].trim() === '') at--;
+  }
+  kept.splice(at, 0, ...block);
+  return kept.join(eol);
 }

@@ -17,6 +17,7 @@ interface State {
   lastAction: Action | null;
   lastReport: Report | null;
   cash: CashHistory | null;
+  chatTick: number;
 }
 
 let state: State = {
@@ -32,6 +33,7 @@ let state: State = {
   lastAction: null,
   lastReport: null,
   cash: null,
+  chatTick: 0,
 };
 const listeners = new Set<() => void>();
 

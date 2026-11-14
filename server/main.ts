@@ -6,7 +6,7 @@ import { loadConfig } from './config.ts';
 import type { Config } from './config.ts';
 import { Auth, hasRole } from './auth.ts';
 import type { Session } from './auth.ts';
-import { Router, HttpError, SseHub, sendJson, readJson, parseCookies, serveStatic, SECURITY_HEADERS } from './http.ts';
+import { Router, HttpError, SseHub, sendJson, readJson, parseCookies, serveStatic, requireCsrf, errorMessage, SECURITY_HEADERS } from './http.ts';
 import { RconError } from './rcon.ts';
 import { Store } from './store.ts';
 import type { Role } from './store.ts';
@@ -28,7 +28,6 @@ import type { Kv } from './kv.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wd_session';
-const CSRF_HEADER = 'x-requested-with';
 const PUBLIC_DIST = join(ROOT, 'dist/public');
 const ADMIN_DIST = join(ROOT, 'dist/admin');
 const PUBLIC_PAGES = new Set(['/', '/report']);
@@ -195,9 +194,7 @@ function createApp(config: Config, kv: Kv) {
         if (!hasRole(role, needed)) throw new HttpError(403, 'forbidden', `이 작업은 ${needed} 이상 권한이 필요합니다`);
       }
     }
-    if (req.method !== 'GET' && !route.opts.rawBody && req.headers[CSRF_HEADER] !== 'wardogs-dashboard') {
-      throw new HttpError(403, 'csrf', '요청 헤더가 없습니다');
-    }
+    if (req.method !== 'GET' && !route.opts.rawBody) requireCsrf(req);
 
     const body = req.method !== 'GET' && !route.opts.rawBody ? await readJson(req) : {};
     const result = await route.handler({
@@ -276,7 +273,7 @@ function createApp(config: Config, kv: Kv) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = loadConfig();
   const kv = await connectKv(config).catch((err) => {
-    console.error(`[Redis] 연결하지 못해 시작을 멈춥니다: ${err instanceof Error ? err.message : err}`);
+    console.error(`[Redis] 연결하지 못해 시작을 멈춥니다: ${errorMessage(err)}`);
     process.exit(1);
   });
   console.log(`[Redis] ${config.redis.host}:${config.redis.port} db${config.redis.db}에 연결했습니다`);

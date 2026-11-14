@@ -1,8 +1,8 @@
 import { hasRole } from './auth.ts';
 import { HttpError, readBody, errorMessage, requireText, requireSteamId, STEAM_ID } from './http.ts';
 import type { Router, Handler, Body } from './http.ts';
-import { WHITELIST_MODES, WHITELIST_AUDIENCES, newFeedToken } from './store.ts';
-import type { Store, WhitelistMode, WhitelistAudience, FeedRequest } from './store.ts';
+import { WHITELIST_MODES, WHITELIST_AUDIENCES, newFeedToken, CHAT_RETENTION_DAYS } from './store.ts';
+import type { Store, WhitelistMode, WhitelistAudience, FeedRequest, ChatMessage } from './store.ts';
 import type { Role, Session } from './auth.ts';
 import type { RconError, MapSelection } from './rcon.ts';
 import type { RotationSelection, RotationSettings } from './inidoc.ts';
@@ -387,13 +387,20 @@ export function registerApi(router: Router, ctx: ApiContext): void {
 
   route('GET', '/api/config', 'admin', ({ srv }) => srv.rcon.config());
 
+  const requireConfigText = (value: unknown): string => {
+    if (typeof value !== 'string' || !value.trim()) throw new HttpError(400, 'missing_field', '설정 문서를 입력하세요');
+    const n = [...value].length;
+    if (n > 64 * 1024) throw new HttpError(400, 'too_long', `설정 문서는 최대 ${64 * 1024}자입니다 (현재 ${n}자)`);
+    return value;
+  };
+
   route('POST', '/api/config/validate', 'admin', ({ body, srv }) => {
-    const text = requireText(body.text, '설정 문서', 64 * 1024);
+    const text = requireConfigText(body.text);
     return srv.rcon.validateConfig(text);
   });
 
   route('PUT', '/api/config', 'admin', ({ body, session, srv }) => {
-    const text = requireText(body.text, '설정 문서', 64 * 1024);
+    const text = requireConfigText(body.text);
     if (!body.revision) throw new HttpError(400, 'missing_revision', '불러온 리비전 없이 적용할 수 없습니다. 먼저 문서를 불러오세요.');
     return act(srv, session, 'config_apply', null, { revision: body.revision, force: !!body.force }, async () => {
       const result = await srv.rcon.applyConfig(text, { revision: body.revision, force: !!body.force });
@@ -424,6 +431,41 @@ export function registerApi(router: Router, ctx: ApiContext): void {
       store.updateServer(srv.id, { feedToken: newFeedToken() });
       return { token: fleet.refresh(srv.id)!.feedToken };
     }));
+
+  const chatView = ({ rawText, text, ...rest }: ChatMessage) => ({ ...rest, text: rawText ?? text });
+  route('GET', '/api/chat', 'mod', ({ query, srv }) => {
+    const steamId = query.get('steamId') || undefined;
+    if (steamId && !STEAM_ID.test(steamId)) throw new HttpError(400, 'bad_steam_id', 'SteamID64가 올바르지 않습니다');
+    const messages = srv.store.chat({
+      before: Number(query.get('before')) || undefined,
+      after: Number(query.get('after')) || undefined,
+      limit: Number(query.get('limit')) || 100,
+      steamId,
+      channel: query.get('channel')?.slice(0, 32) || undefined,
+      search: query.get('search')?.trim().slice(0, 100) || undefined,
+    });
+    return { messages: messages.map(chatView), channels: srv.store.chatChannels(), collector: srv.poller.chat, retentionDays: CHAT_RETENTION_DAYS };
+  });
+
+  const requireChat = (srv: ServerRuntime) => {
+    if (srv.rcon.capabilities && !srv.rcon.features.chat) throw new HttpError(501, 'no_route', '이 서버 빌드에는 채팅 약관이 없습니다 (0.3.0 이전)');
+  };
+  route('GET', '/api/chat-terms', 'admin', async ({ srv }) => {
+    requireChat(srv);
+    return srv.rcon.chatTerms();
+  });
+  route('POST', '/api/chat-terms', 'owner', async ({ body, session, srv }) => {
+    requireChat(srv);
+    const version = Number(body.version);
+    const terms = await srv.rcon.chatTerms();
+    if (terms.requiredVersion == null || version !== terms.requiredVersion) {
+      throw new HttpError(409, 'terms_changed', '서버의 약관 버전이 바뀌었습니다. 새로 고친 뒤 다시 읽고 동의하세요');
+    }
+    const result = await act(srv, session, 'chat_terms_accept', null, { version }, () => srv.rcon.acceptChatTerms(version));
+    srv.poller.recheckHealth();
+    srv.poller.nudge();
+    return result;
+  });
 
   route('GET', '/api/discord-bot', 'admin', ({ srv }) => ({
     configured: botInstallConfigured(config) && discord.configured,

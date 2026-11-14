@@ -123,7 +123,7 @@ function FieldInput({ f, value, saved, dirty, locked, applies, shadow, error, di
     f.hint,
   ].filter(Boolean).join(' · ');
   return (
-    <label className="field">
+    <label className={f.type === 'lines' ? 'field field-wide' : 'field'}>
       <span className="field-label">
         <span>{f.label}</span>
         <span>
@@ -138,6 +138,8 @@ function FieldInput({ f, value, saved, dirty, locked, applies, shadow, error, di
           <button type="button" role="radio" aria-checked={value === true} className={value === true ? 'on' : ''} disabled={disabled} onClick={() => onChange(true)}>켬</button>
           <button type="button" role="radio" aria-checked={value === false} className={value === false ? 'on' : ''} disabled={disabled} onClick={() => onChange(false)}>끔</button>
         </span>
+      ) : f.type === 'lines' ? (
+        <textarea rows={6} value={String(value)} disabled={disabled} spellCheck={false} onChange={(e) => onChange(e.target.value)} />
       ) : f.type === 'enum' ? (
         <select value={String(value)} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
           {value === '' ? <option value="">{`기본값 (${f.options!.find((o) => o.value === f.def)?.label ?? f.def})`}</option> : null}

@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import type { Live } from '../lib/types.ts';
 import { useStore, can } from '../lib/store.ts';
 import { run } from '../lib/api.ts';
-import { toast } from '../lib/toast.ts';
+import { copyText } from '../lib/toast.ts';
 import { Counter } from '../lib/modal.tsx';
 import { fmtClock, fmtDuration, fmtAgo, fmtDist, pct, charCount, STATE_LABELS } from '../lib/format.ts';
 import { Card, Empty, ScoreRow, Fdot, MapArt, useNow, useFactionColor } from '../components/common.tsx';
@@ -67,9 +67,10 @@ function Banners({ live }: { live: Live | null }) {
     if (live.mapTransition) items.push(['warn', '맵 전환 중: 약 40초간 인원·팀 정보가 비어 보입니다.']);
     if (live.restart?.due) items.push(['warn', `가동 ${fmtDuration(live.restart.uptimeSeconds)}: 이번 라운드 후 24시간 자동 재시작`]);
     if (live.cashUnreliable) items.push(['info', '이 호스트는 돈을 0으로 보고합니다.']);
+    if (live.gameFeed?.pausedForTerms) items.push(['error', "게임 서버가 채팅 약관 동의 전까지 이벤트 피드(킬·매치 기록)를 보내지 않습니다. '설정 › 연결 정보'에서 소유자가 동의하세요."]);
     const f = live.feed;
     const playing = (live.status?.players?.current ?? 0) > 0;
-    if (playing && !live.mapTransition && (!f?.lastBatchAt || Date.now() - f.lastBatchAt > FEED_SILENT_MS)) {
+    if (playing && !live.mapTransition && !live.gameFeed?.pausedForTerms && (!f?.lastBatchAt || Date.now() - f.lastBatchAt > FEED_SILENT_MS)) {
       items.push(['warn', f?.lastBatchAt
         ? `이벤트 피드 끊김 · ${fmtAgo(f.lastBatchAt)}`
         : '이벤트 피드를 받은 적이 없습니다.']);
@@ -88,7 +89,7 @@ function ServerLine({ live }: { live: Live | null }) {
     <div className="server-line small">
       <span className="muted">서버 접속 ID</span>
       {id ? (
-        <button className="mono link" type="button" title="복사" onClick={() => navigator.clipboard?.writeText(id).then(() => toast('복사했습니다'))}>{id}</button>
+        <button className="mono link" type="button" title="복사" onClick={() => copyText(id)}>{id}</button>
       ) : <span className="muted">없음</span>}
     </div>
   );

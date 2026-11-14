@@ -28,3 +28,12 @@ export function toast(message: string, kind: ToastKind = 'ok'): void {
 export function useToasts(): Toast[] {
   return useSyncExternalStore((fn) => (listeners.add(fn), () => listeners.delete(fn)), () => toasts);
 }
+
+export async function copyText(text: string, done = '복사했습니다'): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(done);
+  } catch (err) {
+    toast(`복사하지 못했습니다: ${err instanceof Error ? err.message : err}`, 'error');
+  }
+}

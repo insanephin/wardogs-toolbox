@@ -4,7 +4,7 @@ export const ROLE_LABEL: Record<Role, string> = { viewer: '뷰어', mod: '모더
 export const PROVIDER_LABEL: Record<string, string> = { steam: '스팀', discord: '디스코드', chzzk: '치지직', twitch: '트위치' };
 export const OUTCOME_LABEL: Record<string, string> = { applied: '즉시 적용', 'next-match': '다음 매치', 'next-restart': '서버 재시작 후', pending: '적용 시 확인' };
 
-export const MODIFIER_LABEL: Record<string, string> = { KOTH_InfantryOnly: '보병 전용', KOTH_Hardcore: '하드코어' };
+export const MODIFIER_LABEL: Record<string, string> = { KOTH_InfantryOnly: '보병 전용', KOTH_Hardcore: '하드코어', KOTH_LimitedGear: '장비 제한' };
 export const BASE_MODE_LABEL = '점령전';
 export const isBaseMode = (id: string) => /_KOTH_\d+$/.test(id);
 export function modesLabel(experiences: string[]): string {
@@ -23,6 +23,13 @@ export const LIGHTING: Record<string, { label: string; hint: string }> = {
   DayLateRain: { label: '늦은 오후 · 비', hint: '어둡고 시야가 떨어져 위장한 적을 알아보기 어렵습니다.' },
   DayEndClear: { label: '해질녘 · 맑음', hint: '해가 낮아 역광과 긴 그림자가 생기고, 바라보는 방향에 따라 눈부심이 다릅니다.' },
 };
+const MAP_LIGHTINGS: Record<string, string[]> = { Russia: ['DayClear', 'DayLateClear', 'DayLateGray', 'DayLateRain'] };
+export function lightingsForMap<T extends { id: string }>(map: string | null | undefined, lightings: T[]): T[] {
+  const allowed = map ? MAP_LIGHTINGS[map] : undefined;
+  if (!allowed) return lightings;
+  const narrowed = lightings.filter((l) => allowed.includes(l.id));
+  return narrowed.length ? narrowed : lightings;
+}
 export const lightingLabel = (id: string | null | undefined) => (id ? LIGHTING[id]?.label ?? id : '');
 
 export const ALTERNATOR: Record<string, { label: string; hint: string }> = {

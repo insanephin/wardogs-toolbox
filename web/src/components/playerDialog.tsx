@@ -1,13 +1,17 @@
 import { useEffect, useRef } from 'react';
-import type { Link, Player, PlayerProfile, Streamer } from '../lib/types.ts';
+import type { ChatData, ChatMessage, Link, Player, PlayerProfile, Streamer } from '../lib/types.ts';
+import { focusChatPlayer } from '../lib/chatFocus.ts';
 import { useStore, getState, can, serves } from '../lib/store.ts';
 import { api, run } from '../lib/api.ts';
 import { modal, confirmAction, openDialog, Overlay } from '../lib/modal.tsx';
 import { fmtNum, fmtTime, pct } from '../lib/format.ts';
 
 export async function openPlayer(p: Player, online = true) {
-  const profile = await api<PlayerProfile>('GET', `/api/players/${p.steamId}/profile`).catch(() => null);
-  openDialog((close) => <PlayerDialog p={p} profile={profile} online={online} close={close} />);
+  const [profile, chat] = await Promise.all([
+    api<PlayerProfile>('GET', `/api/players/${p.steamId}/profile`).catch(() => null),
+    can('mod') ? api<ChatData>('GET', `/api/chat?steamId=${encodeURIComponent(p.steamId)}&limit=5`).then((d) => d.messages, () => null) : null,
+  ]);
+  openDialog((close) => <PlayerDialog p={p} profile={profile} chat={chat} online={online} close={close} />);
 }
 
 export async function openPlayerById(steamId: string, known: { name?: string | null; link?: Link | null } = {}) {
@@ -20,7 +24,7 @@ export async function openPlayerById(steamId: string, known: { name?: string | n
   return openPlayer(offline, false);
 }
 
-function PlayerDialog({ p, profile, online, close }: { p: Player; profile: PlayerProfile | null; online: boolean; close: () => void }) {
+function PlayerDialog({ p, profile, chat, online, close }: { p: Player; profile: PlayerProfile | null; chat: ChatMessage[] | null; online: boolean; close: () => void }) {
   const caps = useStore((s) => s.caps);
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => closeRef.current?.focus(), []);
@@ -51,6 +55,19 @@ function PlayerDialog({ p, profile, online, close }: { p: Player; profile: Playe
         <InfoTable steamId={p.steamId} name={p.name} link={p.link} streamer={p.streamer} seen={profile?.player ?? null} />
         {profile && profile.names.length > 1 ? <p className="small">사용한 이름: {profile.names.map((n) => n.name).join(', ')}</p> : null}
         {profile?.weapons?.length ? <p className="small">주무기: {profile.weapons.slice(0, 5).map((w) => `${w.weapon} ${w.kills}`).join(', ')}</p> : null}
+        {chat ? (
+          <div className="stack">
+            <div className="row-between">
+              <span className="small"><strong>최근 채팅</strong></span>
+              <button type="button" className="btn btn-sm" onClick={() => { close(); focusChatPlayer({ steamId: p.steamId, name: p.name }); }}>채팅 기록 전체 보기</button>
+            </div>
+            {chat.length ? (
+              <div className="chat-recent small">
+                {chat.map((m) => <div key={m.id}><span className="muted">{`${fmtTime(m.sentAt)} · ${m.channel ?? '?'} · `}</span>{m.text}</div>)}
+              </div>
+            ) : <span className="muted small">기록된 채팅이 없습니다.</span>}
+          </div>
+        ) : null}
         {can('mod') ? (
           <div className="action-grid">
             <button type="button" className="btn" disabled={!online} title={offlineTip} onClick={act(() => whisper(p))}>귓속말</button>

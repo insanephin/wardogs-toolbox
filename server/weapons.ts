@@ -1,10 +1,11 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, watchFile } from 'node:fs';
+import { errorMessage } from './http.ts';
 
 export interface WeaponLookup {
   name(cause: string | null | undefined): string | null;
 }
 
-export type WeaponRenames = [cause: string, name: string][];
+type WeaponRenames = [cause: string, name: string][];
 
 const SAVE_DELAY_MS = 1000;
 const WATCH_MS = 2000;
@@ -69,7 +70,7 @@ export class WeaponNames implements WeaponLookup {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('객체가 아닙니다');
       return Object.fromEntries(Object.entries(parsed).filter(([, v]) => typeof v === 'string').map(([k, v]) => [k, (v as string).trim()]));
     } catch (err) {
-      console.warn(`[무기] ${this.#path}를 읽지 못해 이전 이름표를 유지합니다: ${err instanceof Error ? err.message : err}`);
+      console.warn(`[무기] ${this.#path}를 읽지 못해 이전 이름표를 유지합니다: ${errorMessage(err)}`);
       return null;
     }
   }
@@ -93,7 +94,7 @@ export class WeaponNames implements WeaponLookup {
       renameSync(tmp, this.#path);
       this.#written = text;
     } catch (err) {
-      console.warn(`[무기] ${this.#path}에 새 무기를 저장하지 못했습니다: ${err instanceof Error ? err.message : err}`);
+      console.warn(`[무기] ${this.#path}에 새 무기를 저장하지 못했습니다: ${errorMessage(err)}`);
     }
   }
 }

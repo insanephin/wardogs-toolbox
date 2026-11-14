@@ -12,6 +12,7 @@ const ALIAS: Record<string, string> = {
   Kavkazi: 'Bakurani', Bakurani: 'Kavkazi',
   Europe: 'Ozeti', Ozeti: 'Europe',
   NorthAmerica: 'Zestafona', Zestafona: 'NorthAmerica',
+  Russia: 'Sabatulo', Sabatulo: 'Russia',
 };
 
 interface Art {
